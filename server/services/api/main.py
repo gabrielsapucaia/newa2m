@@ -39,6 +39,31 @@ async def health() -> dict[str, Any]:
     return {"ok": True, "server_ip": SERVER_IP}
 
 
+@app.get("/stats")
+async def stats() -> JSONResponse:
+    out: dict[str, Any] = {"devices": []}
+    with psycopg.connect(PG_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM telemetry_flat;")
+            total = cur.fetchone()[0]
+            cur.execute(
+                """
+                SELECT device_id, MAX(ts) AS last_ts
+                FROM telemetry_flat
+                GROUP BY device_id
+                ORDER BY last_ts DESC
+                LIMIT 20;
+                """
+            )
+            devs = [
+                {"device_id": r[0], "last_ts": r[1].isoformat()}
+                for r in cur.fetchall()
+            ]
+    out["db_total_points"] = total
+    out["devices"] = devs
+    return JSONResponse(out)
+
+
 @app.get("/devices/{device_id}/series")
 async def series(
     device_id: str,
