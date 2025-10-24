@@ -1,0 +1,5 @@
+﻿fastapi==0.115.4
+uvicorn[standard]==0.30.6
+psycopg[binary,pool]==3.2.1
+paho-mqtt==1.6.1
+orjson==3.10.7

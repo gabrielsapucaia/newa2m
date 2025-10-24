@@ -1,0 +1,5 @@
+﻿paho-mqtt==1.6.1
+psycopg[binary,pool]==3.2.1
+boto3==1.35.58
+pyarrow==17.0.0
+pandas==2.2.2
