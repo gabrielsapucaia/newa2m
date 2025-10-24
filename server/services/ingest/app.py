@@ -64,11 +64,21 @@ def db_writer():
                     ))
 
 def s3_writer():
-    s3 = boto3.client("s3",
+    s3 = boto3.client(
+        "s3",
         endpoint_url=S3_ENDPOINT,
         aws_access_key_id=S3_ACCESS_KEY,
         aws_secret_access_key=S3_SECRET_KEY,
-        region_name=S3_REGION)
+        region_name=S3_REGION,
+    )
+    try:
+        s3.head_bucket(Bucket=S3_BUCKET)
+    except Exception:
+        try:
+            s3.create_bucket(Bucket=S3_BUCKET)
+            print(f"[ingest] S3 bucket '{S3_BUCKET}' criado.")
+        except Exception as e:
+            print(f"[ingest] Falha ao criar bucket '{S3_BUCKET}': {e}")
     buffer = []
     last_flush = time.time()
     FLUSH_EVERY = 10
@@ -79,13 +89,24 @@ def s3_writer():
             buffer.append(item)
         except queue.Empty:
             pass
-        if buffer and (len(buffer)>=BATCH_SIZE or time.time()-last_flush>=FLUSH_EVERY):
+        if buffer and (
+            len(buffer) >= BATCH_SIZE or time.time() - last_flush >= FLUSH_EVERY
+        ):
             rows = []
             for topic, payload, ts in buffer:
                 if topic.startswith("telemetry/"):
-                    device_id = topic.split("/",1)[1]
-                    rows.append({"ts": ts, "device_id": device_id, "payload": json.dumps(payload)})
+                    device_id = topic.split("/", 1)[1]
+                    rows.append(
+                        {
+                            "ts": ts,
+                            "device_id": device_id,
+                            "payload": json.dumps(payload),
+                        }
+                    )
             if rows:
+                import io
+                import pandas as pd
+
                 df = pd.DataFrame(rows)
                 dt = datetime.utcnow().strftime("%Y-%m-%d")
                 key = f"frames/dt={dt}/part-{int(time.time())}.parquet"
@@ -93,7 +114,8 @@ def s3_writer():
                 df.to_parquet(f, index=False)
                 f.seek(0)
                 s3.put_object(Bucket=S3_BUCKET, Key=key, Body=f.getvalue())
-            buffer.clear(); last_flush = time.time()
+            buffer.clear()
+            last_flush = time.time()
 
 def main():
     threading.Thread(target=db_writer, daemon=True).start()
