@@ -20,55 +20,30 @@ topic_last = "last/#"
 q = queue.Queue(maxsize=20000)
 
 
-def _as_float(value):
+def g(d, *path, default=None):
+    """Acessa d[path...] com seguranca e suporta chaves planas."""
+    if not path:
+        return default
+    if isinstance(d, dict):
+        joined = ".".join(path)
+        if joined in d:
+            return d[joined]
+    cur = d
+    for p in path:
+        if not isinstance(cur, dict) or p not in cur:
+            return default
+        cur = cur[p]
+    return cur
+
+
+def fnum(x):
+    """Converte para float ou retorna None."""
     try:
-        if value is None:
+        if x is None:
             return None
-        if isinstance(value, str) and value.lower() in {"", "null"}:
-            return None
-        return float(value)
-    except (TypeError, ValueError):
+        return float(x)
+    except Exception:
         return None
-
-
-def _as_int(value):
-    try:
-        if value is None:
-            return None
-        if isinstance(value, str) and value.lower() in {"", "null"}:
-            return None
-        return int(float(value))
-    except (TypeError, ValueError):
-        return None
-
-
-def _lookup_path(data, parts):
-    current = data
-    for part in parts:
-        if isinstance(current, dict) and part in current:
-            current = current[part]
-        else:
-            return None
-    return current
-
-
-def get_field(payload, *candidates):
-    """Retorna o primeiro valor encontrado entre chaves / caminhos informados."""
-    for candidate in candidates:
-        if candidate is None:
-            continue
-        if isinstance(candidate, (tuple, list)):
-            value = _lookup_path(payload, candidate)
-            if value is not None:
-                return value
-            continue
-        if isinstance(payload, dict) and candidate in payload and payload[candidate] is not None:
-            return payload[candidate]
-        parts = candidate.split(".")
-        value = _lookup_path(payload, parts)
-        if value is not None:
-            return value
-    return None
 
 def parse_mqtt_uri(uri):
     host_port = uri.replace("mqtt://","")
@@ -93,35 +68,87 @@ def db_writer():
     with psycopg.connect(PG_DSN, autocommit=True) as conn:
         while True:
             topic, payload, ts = q.get()
-            if topic.startswith("telemetry/"):
-                device_id = topic.split("/",1)[1]
-                lat = _as_float(get_field(payload, "gnss.lat", ("gnss", "lat"), "lat"))
-                lon = _as_float(get_field(payload, "gnss.lon", ("gnss", "lon"), "lon"))
-                speed = _as_float(get_field(payload, "gnss.speed", ("gnss", "speed"), "speed"))
-                heading = _as_float(get_field(payload, "gnss.heading", "gnss.course", ("gnss", "heading")))
-                altitude = _as_float(get_field(payload, "gnss.alt", ("gnss", "alt"), "altitude"))
-                imu_rms_x = _as_float(get_field(payload, "imu.acc.x.rms", "imu.rms_x", ("imu", "rms_x")))
-                imu_rms_y = _as_float(get_field(payload, "imu.acc.y.rms", "imu.rms_y", ("imu", "rms_y")))
-                imu_rms_z = _as_float(get_field(payload, "imu.acc.z.rms", "imu.rms_z", ("imu", "rms_z")))
-                jerk_x = _as_float(get_field(payload, "imu.jerk.x.rms", "imu.jerk_x", ("imu", "jerk", "x")))
-                jerk_y = _as_float(get_field(payload, "imu.jerk.y.rms", "imu.jerk_y", ("imu", "jerk", "y")))
-                jerk_z = _as_float(get_field(payload, "imu.jerk.z.rms", "imu.jerk_z", ("imu", "jerk", "z")))
-                cn0 = _as_float(get_field(payload, "gnss.cn0_avg", ("gnss", "cn0_avg"), "cn0_avg"))
-                sats = _as_int(get_field(payload, "gnss.num_sats", "gnss.sats_used", ("gnss", "sats_used"), "sats_used"))
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        INSERT INTO telemetry_flat
-                        (ts, device_id, lat, lon, speed, heading, altitude,
-                         imu_rms_x, imu_rms_y, imu_rms_z,
-                         jerk_x, jerk_y, jerk_z, cn0_avg, sats_used, payload)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                        ON CONFLICT DO NOTHING
-                    """, (
-                        ts, device_id, lat, lon, speed, heading, altitude,
-                        imu_rms_x, imu_rms_y, imu_rms_z,
-                        jerk_x, jerk_y, jerk_z,
-                        cn0, sats, json.dumps(payload)
-                    ))
+            if not topic.startswith("telemetry/"):
+                continue
+            if isinstance(payload, dict):
+                device_fallback = payload.get("deviceId") or payload.get("device_id")
+            else:
+                device_fallback = None
+            device_id = topic.split("/", 1)[1] if "/" in topic else (device_fallback or "unknown")
+
+            # GNSS
+            direct_lat = payload.get("lat") if isinstance(payload, dict) else None
+            direct_lon = payload.get("lon") if isinstance(payload, dict) else None
+            direct_speed = payload.get("speed") if isinstance(payload, dict) else None
+            direct_heading = payload.get("heading") if isinstance(payload, dict) else None
+            direct_altitude = payload.get("altitude") if isinstance(payload, dict) else None
+            direct_cn0 = payload.get("cn0_avg") if isinstance(payload, dict) else None
+            direct_sats = payload.get("sats_used") if isinstance(payload, dict) else None
+
+            lat = fnum(g(payload, "gnss", "lat", default=direct_lat))
+            lon = fnum(g(payload, "gnss", "lon", default=direct_lon))
+            speed = fnum(g(payload, "gnss", "speed", default=direct_speed))
+            heading = fnum(
+                g(
+                    payload,
+                    "gnss",
+                    "heading",
+                    default=g(payload, "gnss", "course", default=direct_heading),
+                )
+            )
+            altitude = fnum(
+                g(
+                    payload,
+                    "gnss",
+                    "altitude",
+                    default=g(payload, "gnss", "alt", default=direct_altitude),
+                )
+            )
+            cn0 = fnum(g(payload, "gnss", "cn0_avg", default=direct_cn0))
+            sats = g(payload, "gnss", "num_sats", default=direct_sats)
+            try:
+                sats = int(sats) if sats is not None else None
+            except Exception:
+                sats = None
+
+            # IMU (plano ou aninhado)
+            direct_imu_rms_x = payload.get("imu_rms_x") if isinstance(payload, dict) else None
+            direct_imu_rms_y = payload.get("imu_rms_y") if isinstance(payload, dict) else None
+            direct_imu_rms_z = payload.get("imu_rms_z") if isinstance(payload, dict) else None
+
+            imu_rms_x = fnum(g(payload, "imu", "rms_x", default=direct_imu_rms_x))
+            imu_rms_y = fnum(g(payload, "imu", "rms_y", default=direct_imu_rms_y))
+            imu_rms_z = fnum(g(payload, "imu", "rms_z", default=direct_imu_rms_z))
+            if imu_rms_x is None:
+                imu_rms_x = fnum(g(payload, "imu", "acc", "x", "rms"))
+            if imu_rms_y is None:
+                imu_rms_y = fnum(g(payload, "imu", "acc", "y", "rms"))
+            if imu_rms_z is None:
+                imu_rms_z = fnum(g(payload, "imu", "acc", "z", "rms"))
+
+            jerk_x = fnum(g(payload, "imu", "jerk", "x", "rms", default=g(payload, "imu", "jerk", "x")))
+            jerk_y = fnum(g(payload, "imu", "jerk", "y", "rms", default=g(payload, "imu", "jerk", "y")))
+            jerk_z = fnum(g(payload, "imu", "jerk", "z", "rms", default=g(payload, "imu", "jerk", "z")))
+
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO telemetry_flat
+                      (ts, device_id, lat, lon, speed, heading, altitude,
+                       imu_rms_x, imu_rms_y, imu_rms_z,
+                       jerk_x, jerk_y, jerk_z,
+                       cn0_avg, sats_used, payload)
+                    VALUES
+                      (%s,%s,%s,%s,%s,%s,%s,
+                       %s,%s,%s,
+                       %s,%s,%s,
+                       %s,%s,%s)
+                    ON CONFLICT DO NOTHING
+                """, (
+                    ts, device_id, lat, lon, speed, heading, altitude,
+                    imu_rms_x, imu_rms_y, imu_rms_z,
+                    jerk_x, jerk_y, jerk_z,
+                    cn0, sats, json.dumps(payload)
+                ))
 
 def s3_writer():
     s3 = boto3.client(
