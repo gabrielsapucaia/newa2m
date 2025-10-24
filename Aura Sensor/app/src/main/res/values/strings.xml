@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Aura Sensor</string>
+    <string name="notification_channel_name">Aura Sensor</string>
+    <string name="notification_channel_description">Coleta contínua de telemetria a 1 Hz</string>
+    <string name="notification_title_active">Aura Sensor: coletando @1Hz</string>
+    <string name="notification_title_idle">Aura Sensor: inativo</string>
+    <string name="notification_text_active">Publicando telemetria e salvando cópia local</string>
+    <string name="notification_text_idle">Toque para iniciar a coleta</string>
+
+    <string name="label_operator_id">ID do operador</string>
+    <string name="label_operator_name">Nome do operador</string>
+    <string name="label_login_status">Operador atual</string>
+    <string name="label_mqtt_status">Status dos brokers</string>
+    <string name="label_seq_counter">Sequência</string>
+    <string name="label_queue_size">Fila offline</string>
+    <string name="label_last_location">Última leitura GNSS</string>
+    <string name="label_last_motion">Última leitura IMU</string>
+    <string name="label_nmea_toggle">Habilitar NMEA</string>
+    <string name="label_auto_start">Iniciar automaticamente após boot</string>
+    <string name="label_equipment_tag">Tag do equipamento</string>
+
+    <string name="action_start">Iniciar coleta</string>
+    <string name="action_stop">Parar coleta</string>
+    <string name="action_save_operator">Salvar operador</string>
+    <string name="action_request_battery_opt">Ignorar otimização de bateria</string>
+
+    <string name="text_not_available">--</string>
+    <string name="text_broker_connected">Conectado</string>
+    <string name="text_broker_disconnected">Desconectado</string>
+    <string name="text_broker_disabled">Desabilitado</string>
+    <string name="text_broker_connecting">Conectando</string>
+    <string name="text_broker_reconnecting">Reconectando</string>
+    <string name="text_broker_failed">Falhou</string>
+    <string name="text_broker_format">%1$s: %2$s</string>
+    <string name="text_service_running">Serviço em execução</string>
+    <string name="text_service_stopped">Serviço parado</string>
+    <string name="text_permission_missing">Permissão obrigatória pendente</string>
+    <string name="heading_status">Status do Serviço</string>
+    <string name="heading_gnss">GNSS &amp; Satélites</string>
+    <string name="heading_imu">IMU 1 Hz</string>
+    <string name="heading_barometer">Barômetro</string>
+    <string name="heading_payload">Último payload</string>
+    <string name="label_broker_local">Broker local</string>
+    <string name="label_broker_cloud">Broker cloud</string>
+    <string name="action_drain_queue">Drenar fila agora</string>
+    <string name="action_force_operator_sync">Forçar Sync Operadores</string>
+    <string name="text_operator_required">Informe o ID do operador</string>
+    <string name="text_equipment_required">Informe a tag do equipamento</string>
+    <string name="action_reconnect">Reconectar</string>
+    <string name="label_broker_endpoint">Endpoints</string>
+    <string name="text_broker_active_endpoint">Ativo: %1$s</string>
+    <string name="action_copy_payload">Copiar JSON</string>
+</resources>

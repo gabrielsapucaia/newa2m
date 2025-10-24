@@ -1,0 +1,106 @@
+{
+  "version": "2.0.0",
+  "options": {
+    "shell": {
+      "executable": "wsl",
+      "args": ["-e", "bash", "-lc"]
+    }
+  },
+  "tasks": [
+    {
+      "label": "ADB: Connect",
+      "type": "shell",
+      "command": "./dev.sh connect",
+      "problemMatcher": []
+    },
+    {
+      "label": "Gradle: assembleDebug",
+      "type": "shell",
+      "command": "./gradlew assembleDebug",
+      "problemMatcher": []
+    },
+    {
+      "label": "App: Build+Install+Run",
+      "type": "shell",
+      "command": "./dev.sh run",
+      "problemMatcher": []
+    },
+    {
+      "label": "ADB: Logcat",
+      "type": "shell",
+      "command": "./dev.sh log",
+      "problemMatcher": []
+    },
+    {
+      "label": "App: Connect+Run",
+      "dependsOrder": "sequence",
+      "dependsOn": ["ADB: Connect", "App: Build+Install+Run"],
+      "problemMatcher": []
+    },
+
+    /* -------- Utilitários de projeto -------- */
+    {
+      "label": "Verify All",
+      "type": "shell",
+      "command": "./verify_all.sh",
+      "problemMatcher": []
+    },
+    {
+      "label": "APK: Info",
+      "type": "shell",
+      "command": "./apk_info.sh",
+      "problemMatcher": []
+    },
+
+    /* -------- Git -------- */
+    {
+      "label": "Git: Commit rápido",
+      "type": "shell",
+      "command": "git add -A && git commit -m \"${input:commitMsg}\" || echo 'Nada a commitar'",
+      "problemMatcher": []
+    },
+    {
+      "label": "Git: Criar tag",
+      "type": "shell",
+      "command": "git tag -a ${input:tagName} -m \"${input:tagMsg}\" && git tag -n | tail -n 1",
+      "problemMatcher": []
+    },
+    {
+      "label": "Git: Push main + tags",
+      "type": "shell",
+      "command": "git push -u origin main && git push --tags",
+      "problemMatcher": []
+    },
+    {
+      "label": "Git: Reverter último commit",
+      "type": "shell",
+      "command": "git revert --no-edit HEAD",
+      "problemMatcher": []
+    },
+    {
+      "label": "Git: Checkpoint (commit + tag timestamp)",
+      "type": "shell",
+      "command": "git add -A && git commit -m \"chore(checkpoint): $(date +'%Y-%m-%d %H:%M')\" || true; git tag -a cp-$(date +'%Y%m%d-%H%M%S') -m \"checkpoint\"; git log -1 --oneline",
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "commitMsg",
+      "type": "promptString",
+      "description": "Mensagem do commit",
+      "default": "chore: atualização"
+    },
+    {
+      "id": "tagName",
+      "type": "promptString",
+      "description": "Nome da tag (ex.: v0.1.0)"
+    },
+    {
+      "id": "tagMsg",
+      "type": "promptString",
+      "description": "Mensagem da tag",
+      "default": "release"
+    }
+  ]
+}
