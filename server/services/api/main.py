@@ -44,23 +44,25 @@ async def stats() -> JSONResponse:
     out: dict[str, Any] = {"devices": []}
     with psycopg.connect(PG_DSN) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM v_telemetry_enriched;")
-            total = cur.fetchone()[0]
             cur.execute(
                 """
-                SELECT device_id, MAX(ts) AS last_ts
+                SELECT device_id, MAX(ts) AS last_ts, COUNT(*) AS total_points
                 FROM v_telemetry_enriched
                 GROUP BY device_id
-                ORDER BY last_ts DESC
-                LIMIT 20;
+                ORDER BY last_ts DESC;
                 """
             )
+            rows = cur.fetchall()
             devs = [
-                {"device_id": r[0], "last_ts": r[1].isoformat()}
-                for r in cur.fetchall()
+                {
+                    "device_id": r[0],
+                    "last_ts": r[1].isoformat(),
+                    "total_points": r[2],
+                }
+                for r in rows
             ]
-    out["db_total_points"] = total
     out["devices"] = devs
+    out["db_total_points"] = sum(d["total_points"] for d in devs)
     return JSONResponse(out)
 
 
