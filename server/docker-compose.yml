@@ -9,7 +9,7 @@
       - "18083:18083"
     env_file: .env
     environment:
-      - EMQX_ALLOW_ANONYMOUS=true
+      - EMQX_ALLOW_ANONYMOUS=false
       - EMQX_MQTT__RETAIN_AVAILABLE=true
       - EMQX_MQTT__MAX_PACKET_SIZE=10MB
   
