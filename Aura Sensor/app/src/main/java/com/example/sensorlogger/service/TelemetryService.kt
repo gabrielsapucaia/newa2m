@@ -1,22 +1,27 @@
 package com.example.sensorlogger.service
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import android.os.IBinder
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import com.example.sensorlogger.MainActivity
 import com.example.sensorlogger.R
+import com.example.sensorlogger.gnss.GnssManager
 import com.example.sensorlogger.model.GnssSnapshot
 import com.example.sensorlogger.model.ImuSnapshot
 import com.example.sensorlogger.model.TelemetryMappers
@@ -31,31 +36,29 @@ import com.example.sensorlogger.storage.OfflineQueue
 import com.example.sensorlogger.storage.OfflineQueue.DrainOutcome
 import com.example.sensorlogger.util.IdProvider
 import com.example.sensorlogger.util.Time
-import com.example.sensorlogger.gnss.GnssManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.selects.onTimeout
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
 import com.example.sensorlogger.BuildConfig
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import timber.log.Timber
-import android.os.SystemClock
 import java.nio.charset.StandardCharsets
 import kotlin.math.min
 import kotlin.random.Random
-import kotlinx.coroutines.withTimeoutOrNull
 
 class TelemetryService : LifecycleService() {
 
@@ -204,6 +207,14 @@ class TelemetryService : LifecycleService() {
             updateNotification()
             return
         }
+        if (!hasLocationPermission()) {
+            Timber.w("TelemetryService start skipped: missing location permission")
+            TelemetryStateStore.update { state ->
+                state.copy(serviceRunning = false, permissionsGranted = false)
+            }
+            stopSelf()
+            return
+        }
         if (operatorId.isBlank() || equipmentTag.isBlank()) {
             Timber.w("TelemetryService start skipped: missing operatorId or equipmentTag")
             stopSelf()
@@ -224,6 +235,19 @@ class TelemetryService : LifecycleService() {
         }
         serviceScope.launch { telemetryLoop() }
         drainTrigger.trySend(Unit)
+    }
+
+    private fun hasLocationPermission(): Boolean {
+        val fineGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        if (fineGranted) return true
+        val coarseGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        return coarseGranted
     }
 
     private fun stopLogging() {

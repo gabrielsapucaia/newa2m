@@ -557,6 +557,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startTelemetryService() {
+        if (!hasForegroundPermissions()) {
+            updatePermissionsState()
+            Toast.makeText(this, getString(R.string.text_permission_missing), Toast.LENGTH_LONG).show()
+            return
+        }
         val operatorId = binding.inputOperatorId.text?.toString().orEmpty().trim()
         val equipmentTag = binding.inputEquipmentTag.text?.toString().orEmpty().trim()
         val name = binding.inputOperatorName.text?.toString().orEmpty().trim()
