@@ -44,12 +44,12 @@ async def stats() -> JSONResponse:
     out: dict[str, Any] = {"devices": []}
     with psycopg.connect(PG_DSN) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM telemetry_flat;")
+            cur.execute("SELECT COUNT(*) FROM v_telemetry_enriched;")
             total = cur.fetchone()[0]
             cur.execute(
                 """
                 SELECT device_id, MAX(ts) AS last_ts
-                FROM telemetry_flat
+                FROM v_telemetry_enriched
                 GROUP BY device_id
                 ORDER BY last_ts DESC
                 LIMIT 20;
@@ -83,7 +83,7 @@ async def series(
                 f"""
                 SELECT time_bucket(%s, ts) as ts_bucket, device_id,
                        {select_cols}
-                FROM telemetry_flat
+                FROM v_telemetry_enriched
                 WHERE device_id=%s AND ts BETWEEN %s AND %s
                 GROUP BY ts_bucket, device_id
                 ORDER BY ts_bucket ASC
@@ -102,7 +102,7 @@ async def last(device_id: str) -> JSONResponse:
             cur.execute(
                 """
                 SELECT ts, device_id, lat, lon, speed, payload
-                FROM telemetry_flat
+                FROM v_telemetry_enriched
                 WHERE device_id=%s
                 ORDER BY ts DESC
                 LIMIT 1
