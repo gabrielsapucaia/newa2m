@@ -19,6 +19,57 @@ topic_telemetry = "telemetry/#"
 topic_last = "last/#"
 q = queue.Queue(maxsize=20000)
 
+
+def _as_float(value):
+    try:
+        if value is None:
+            return None
+        if isinstance(value, str) and value.lower() in {"", "null"}:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_int(value):
+    try:
+        if value is None:
+            return None
+        if isinstance(value, str) and value.lower() in {"", "null"}:
+            return None
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _lookup_path(data, parts):
+    current = data
+    for part in parts:
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            return None
+    return current
+
+
+def get_field(payload, *candidates):
+    """Retorna o primeiro valor encontrado entre chaves / caminhos informados."""
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        if isinstance(candidate, (tuple, list)):
+            value = _lookup_path(payload, candidate)
+            if value is not None:
+                return value
+            continue
+        if isinstance(payload, dict) and candidate in payload and payload[candidate] is not None:
+            return payload[candidate]
+        parts = candidate.split(".")
+        value = _lookup_path(payload, parts)
+        if value is not None:
+            return value
+    return None
+
 def parse_mqtt_uri(uri):
     host_port = uri.replace("mqtt://","")
     parts = host_port.split(":")
@@ -44,22 +95,31 @@ def db_writer():
             topic, payload, ts = q.get()
             if topic.startswith("telemetry/"):
                 device_id = topic.split("/",1)[1]
-                gnss = payload.get("gnss",{})
-                imu  = payload.get("imu",{})
-                jerk = imu.get("jerk",{})
-                lat = gnss.get("lat"); lon = gnss.get("lon"); speed = gnss.get("speed")
-                cn0 = gnss.get("cn0_avg"); sats = gnss.get("sats_used")
+                lat = _as_float(get_field(payload, "gnss.lat", ("gnss", "lat"), "lat"))
+                lon = _as_float(get_field(payload, "gnss.lon", ("gnss", "lon"), "lon"))
+                speed = _as_float(get_field(payload, "gnss.speed", ("gnss", "speed"), "speed"))
+                heading = _as_float(get_field(payload, "gnss.heading", "gnss.course", ("gnss", "heading")))
+                altitude = _as_float(get_field(payload, "gnss.alt", ("gnss", "alt"), "altitude"))
+                imu_rms_x = _as_float(get_field(payload, "imu.acc.x.rms", "imu.rms_x", ("imu", "rms_x")))
+                imu_rms_y = _as_float(get_field(payload, "imu.acc.y.rms", "imu.rms_y", ("imu", "rms_y")))
+                imu_rms_z = _as_float(get_field(payload, "imu.acc.z.rms", "imu.rms_z", ("imu", "rms_z")))
+                jerk_x = _as_float(get_field(payload, "imu.jerk.x.rms", "imu.jerk_x", ("imu", "jerk", "x")))
+                jerk_y = _as_float(get_field(payload, "imu.jerk.y.rms", "imu.jerk_y", ("imu", "jerk", "y")))
+                jerk_z = _as_float(get_field(payload, "imu.jerk.z.rms", "imu.jerk_z", ("imu", "jerk", "z")))
+                cn0 = _as_float(get_field(payload, "gnss.cn0_avg", ("gnss", "cn0_avg"), "cn0_avg"))
+                sats = _as_int(get_field(payload, "gnss.num_sats", "gnss.sats_used", ("gnss", "sats_used"), "sats_used"))
                 with conn.cursor() as cur:
                     cur.execute("""
                         INSERT INTO telemetry_flat
-                        (ts, device_id, lat, lon, speed, imu_rms_x, imu_rms_y, imu_rms_z,
+                        (ts, device_id, lat, lon, speed, heading, altitude,
+                         imu_rms_x, imu_rms_y, imu_rms_z,
                          jerk_x, jerk_y, jerk_z, cn0_avg, sats_used, payload)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                         ON CONFLICT DO NOTHING
                     """, (
-                        ts, device_id, lat, lon, speed,
-                        imu.get("rms_x"), imu.get("rms_y"), imu.get("rms_z"),
-                        jerk.get("x"), jerk.get("y"), jerk.get("z"),
+                        ts, device_id, lat, lon, speed, heading, altitude,
+                        imu_rms_x, imu_rms_y, imu_rms_z,
+                        jerk_x, jerk_y, jerk_z,
                         cn0, sats, json.dumps(payload)
                     ))
 
