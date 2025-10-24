@@ -4,7 +4,7 @@
 The Android app lives under `app/`. Kotlin sources sit in `app/src/main/java/com/example/sensorlogger`, grouped by feature packages such as `service`, `mqtt`, and `storage`. XML layouts, drawables, and configuration live in `app/src/main/res`. JVM unit tests reside in `app/src/test`, while instrumentation tests target `app/src/androidTest`. Shell helpers (`dev.sh`, `verify_all.sh`) stay at the root, and PowerShell utilities live in `tools/`. Secrets and environment overrides belong in `local.properties`; keep only sanitized defaults in VCS.
 
 ## Build, Test, and Development Commands
-- `./gradlew assembleDebug` builds the debug APK (`./dev.sh build` wraps it).
+- `./gradlew assembleDebug` builds the debug APK (`./dev.sh build` wraps it). No Windows: use `cmd /c gradlew.bat` para evitar loops do PowerShell.
 - `./dev.sh run` builds, installs, and launches against the device configured in `local.properties`.
 - `./gradlew lint` executes Android/Kotlin lint; watch for warnings even though `abortOnError=false`.
 - `./gradlew testDebugUnitTest` runs JVM tests; `./gradlew connectedAndroidTest` exercises instrumentation cases (device/emulator required).
