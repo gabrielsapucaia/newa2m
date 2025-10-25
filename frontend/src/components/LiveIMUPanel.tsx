@@ -152,7 +152,14 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
   }, []);
 
   const liveDomain: [number, number] = [nowMs - WINDOW_MS, nowMs];
-  const activeDomain: [number, number] = clampDomain(isLive ? liveDomain : storedDomain ?? liveDomain);
+  const baseDomain = storedDomain ?? liveDomain;
+  const safeXDomain: [number, number] =
+    Array.isArray(baseDomain) &&
+    Number.isFinite(baseDomain[0]) &&
+    Number.isFinite(baseDomain[1])
+      ? baseDomain
+      : [Date.now() - MINUTE_MS, Date.now()];
+  const activeDomain: [number, number] = clampDomain(isLive ? liveDomain : safeXDomain);
 
   useEffect(() => {
     if (isLive) {
@@ -383,3 +390,5 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
     </div>
   );
 }
+
+

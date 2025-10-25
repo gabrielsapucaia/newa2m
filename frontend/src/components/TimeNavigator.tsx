@@ -1,4 +1,4 @@
-﻿import { useMemo } from "react";
+import { useMemo } from "react";
 import { XYLinesWithBrush } from "../lib/chart";
 import type { LivePoint } from "../store/telemetry";
 
