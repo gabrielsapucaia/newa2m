@@ -1,15 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import EChartSeries from "./EChartSeries";
-import { useTelemetry, type LivePoint, EMPTY_POINTS } from "../store/telemetry";
+import type { LivePoint } from "../store/telemetry";
 import { subscribeLastFrame, unsubscribeLastFrame } from "../lib/ws";
 import { getSeries2 } from "../lib/api";
-import { debounce, throttle, MINUTE_MS } from "../lib/timeutils";
+import { MINUTE_MS, debounce, throttle } from "../lib/timeutils";
 
 type RawSample = Record<string, unknown>;
 type LivePointT = LivePoint;
 
 const WINDOW_MS = 10 * MINUTE_MS;
 const FLUSH_MS = 1_000;
+const TICK_MS = 100;
+const MAX_WINDOW_MS = 60 * MINUTE_MS;
 const BACKFILL_CHUNK_MS = 10 * MINUTE_MS;
 const BACKFILL_THRESHOLD_MS = 30_000;
 
@@ -166,131 +168,64 @@ function carrySeries(points: LivePointT[], seed?: LivePointT | null): { series: 
   return { series: out, last: prev };
 }
 
+function normalise(points: LivePointT[]): LivePointT[] {
+  if (points.length === 0) return [];
+  const sorted = [...points]
+    .map((p) => {
+      if (typeof p.t === "number" && Number.isFinite(p.t)) return p;
+      const parsed = Date.parse(p.ts);
+      const t = Number.isFinite(parsed) ? parsed : Date.now();
+      return { ...p, t };
+    })
+    .sort((a, b) => a.t - b.t);
+
+  const dedup: LivePointT[] = [];
+  let lastT: number | undefined;
+  for (const sample of sorted) {
+    if (!Number.isFinite(sample.t)) continue;
+    if (lastT === sample.t) {
+      dedup[dedup.length - 1] = sample;
+    } else {
+      dedup.push(sample);
+      lastT = sample.t;
+    }
+  }
+
+  if (dedup.length === 0) return [];
+
+  const latest = dedup[dedup.length - 1].t;
+  const cutoff = latest - MAX_WINDOW_MS;
+  return dedup.filter((sample) => sample.t >= cutoff);
+}
+
 function clampDomain([start, end]: [number, number]): [number, number] {
   if (!Number.isFinite(start) || !Number.isFinite(end)) {
     const now = Date.now();
-    return [now - MINUTE_MS, now];
+    return [now - WINDOW_MS, now];
   }
-  if (end - start < MINUTE_MS) {
-    return [end - MINUTE_MS, end];
+  if (end <= start) {
+    return [end - 1_000, end + 1_000];
+  }
+  if (end - start > MAX_WINDOW_MS) {
+    return [end - MAX_WINDOW_MS, end];
   }
   return [start, end];
 }
 
 export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
-  const appendMany = useTelemetry((state) => state.appendMany);
-  const prependMany = useTelemetry((state) => state.prependMany);
-  const reset = useTelemetry((state) => state.reset);
-  const setOldest = useTelemetry((state) => state.setOldest);
-  const setXDomain = useTelemetry((state) => state.setXDomain);
-  const series = useTelemetry((state) => state.byDevice[deviceId]);
-
-  const points = useMemo<LivePointT[]>(() => (series?.points ?? EMPTY_POINTS) as LivePointT[], [series?.points]);
-  const storedDomain = series?.xDomain ?? null;
-  const oldestLoaded = series?.oldest ?? (points.length ? points[0].t : Date.now());
-
-  const initialDomainRef = useRef<[number, number]>([Date.now() - WINDOW_MS, Date.now()]);
-
-  const baseDomain = storedDomain ?? initialDomainRef.current;
-  const safeDomain = clampDomain(baseDomain);
-  const activeDomain = safeDomain;
-
-  const programmaticZoomRef = useRef(false);
-  const lastKnownRef = useRef<LivePointT | null>(points.length ? points[points.length - 1] : null);
-
-  useEffect(() => {
-    if (points.length) {
-      lastKnownRef.current = points[points.length - 1];
-    }
-  }, [points]);
-
-  const getLiveDomain = useCallback((): [number, number] => {
+  const [series, setSeries] = useState<LivePointT[]>([]);
+  const [isLive, setIsLive] = useState(true);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [xDomain, setXDomain] = useState<[number, number]>(() => {
     const now = Date.now();
     return [now - WINDOW_MS, now];
-  }, []);
-
-  const pushDomain = useCallback(
-    (domain: [number, number]) => {
-      programmaticZoomRef.current = true;
-      initialDomainRef.current = domain;
-      setXDomain(deviceId, domain);
-    },
-    [deviceId, setXDomain],
-  );
+  });
+  const [oldestTs, setOldestTs] = useState(() => Date.now());
 
   const stagingRef = useRef<LivePointT[]>([]);
-
-  useEffect(() => {
-    let mounted = true;
-
-    const hydrate = async () => {
-      const attempt = async (params: { bucket: string; window_sec: number; end?: string }) => {
-        const seed = await getSeries2(deviceId, params);
-        if (!mounted) return;
-        const rows = Array.isArray(seed?.data) ? (seed.data as RawSample[]) : [];
-        const mapped = rows.map(toPoint);
-        const carried = carrySeries(mapped);
-        reset(deviceId, carried.series);
-        if (carried.series.length) {
-          const oldest = Math.min(...carried.series.map((p) => p.t));
-          setOldest(deviceId, oldest);
-          const domain = getLiveDomain();
-          pushDomain(domain);
-          lastKnownRef.current = carried.last;
-        }
-      };
-
-      try {
-        await attempt({ bucket: "1s", window_sec: BACKFILL_CHUNK_MS / 1000 });
-      } catch {
-        try {
-          await attempt({ bucket: "10s", window_sec: BACKFILL_CHUNK_MS / 1000 });
-        } catch (error) {
-          console.error("[LiveIMUPanel] backfill inicial falhou", error);
-          if (mounted) {
-            reset(deviceId, []);
-            pushDomain(getLiveDomain());
-          }
-        }
-      }
-    };
-
-    void hydrate();
-
-    return () => {
-      mounted = false;
-    };
-  }, [deviceId, getLiveDomain, pushDomain, reset, setOldest]);
-
-  useEffect(() => {
-    const handleMessage = (payload: RawSample) => {
-      const prev = stagingRef.current[stagingRef.current.length - 1] ?? lastKnownRef.current ?? undefined;
-      const point = withCarry(toPoint(payload), prev);
-      stagingRef.current.push(point);
-      lastKnownRef.current = point;
-    };
-
-    const stop = subscribeLastFrame(deviceId, handleMessage);
-
-    return () => {
-      stop();
-    };
-  }, [deviceId]);
-
-  useEffect(() => {
-    const flush = () => {
-      if (!stagingRef.current.length) return;
-      const batch = stagingRef.current.splice(0, stagingRef.current.length);
-      appendMany(deviceId, batch);
-      lastKnownRef.current = batch[batch.length - 1] ?? lastKnownRef.current;
-    };
-
-    const id = window.setInterval(flush, FLUSH_MS) as unknown as number;
-    return () => {
-      window.clearInterval(id);
-      flush();
-    };
-  }, [appendMany, deviceId]);
+  const lastKnownRef = useRef<LivePointT | null>(null);
+  const ignoreZoomRef = useRef(false);
+  const requestedEndsRef = useRef<Set<number>>(new Set());
 
   useEffect(() => {
     return () => {
@@ -298,7 +233,95 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
     };
   }, []);
 
-  const requestedEndsRef = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    let cancelled = false;
+    stagingRef.current = [];
+    requestedEndsRef.current.clear();
+    lastKnownRef.current = null;
+    setSeries([]);
+    const now = Date.now();
+    setIsLive(true);
+    setNowMs(now);
+    ignoreZoomRef.current = true;
+    setXDomain(clampDomain([now - WINDOW_MS, now]));
+    setOldestTs(now);
+
+    const hydrate = async () => {
+      try {
+        const seed = await getSeries2(deviceId, { bucket: "1s", window_sec: BACKFILL_CHUNK_MS / 1000 });
+        if (cancelled) return;
+        const rows = Array.isArray(seed?.data) ? (seed.data as RawSample[]) : [];
+        const mapped = rows.map(toPoint);
+        const carried = carrySeries(mapped);
+        const initial = normalise(carried.series);
+        setSeries(initial);
+        if (initial.length) {
+          setOldestTs(initial[0].t);
+          lastKnownRef.current = carried.last ?? initial[initial.length - 1];
+        }
+      } catch (error) {
+        console.error("[LiveIMUPanel] backfill inicial falhou", error);
+      }
+    };
+
+    void hydrate();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [deviceId]);
+
+  useEffect(() => {
+    const stop = subscribeLastFrame(deviceId, (payload: RawSample) => {
+      const prev = stagingRef.current[stagingRef.current.length - 1] ?? lastKnownRef.current ?? undefined;
+      const point = withCarry(toPoint(payload), prev);
+      stagingRef.current.push(point);
+      lastKnownRef.current = point;
+    });
+
+    return () => {
+      stop();
+      stagingRef.current = [];
+    };
+  }, [deviceId]);
+
+  useEffect(() => {
+    const flush = () => {
+      if (!stagingRef.current.length) return;
+      const batch = stagingRef.current.splice(0, stagingRef.current.length);
+      setSeries((prev) => {
+        const merged = normalise([...prev, ...batch]);
+        if (merged.length) {
+          setOldestTs(merged[0].t);
+          lastKnownRef.current = merged[merged.length - 1];
+        }
+        return merged;
+      });
+    };
+
+    const id = window.setInterval(flush, FLUSH_MS) as unknown as number;
+    return () => {
+      window.clearInterval(id);
+      flush();
+    };
+  }, []);
+
+  useEffect(() => {
+    const ticker = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, TICK_MS) as unknown as number;
+    return () => {
+      window.clearInterval(ticker);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isLive) return;
+    const liveDomain: [number, number] = [nowMs - WINDOW_MS, nowMs];
+    ignoreZoomRef.current = true;
+    setXDomain(clampDomain(liveDomain));
+  }, [isLive, nowMs]);
+
   const fetchBackfill = useMemo(
     () =>
       throttle(async (endMs: number) => {
@@ -313,52 +336,78 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           });
           const rows = Array.isArray(seed?.data) ? (seed.data as RawSample[]) : [];
           if (!rows.length) return;
-          const carried = carrySeries(rows.map(toPoint)).series;
-          prependMany(deviceId, carried);
-          const newestOld = Math.min(...carried.map((p) => p.t));
-          setOldest(deviceId, newestOld);
+          const carried = carrySeries(rows.map(toPoint));
+          setSeries((prev) => {
+            const merged = normalise([...carried.series, ...prev]);
+            if (merged.length) {
+              setOldestTs(merged[0].t);
+              lastKnownRef.current = merged[merged.length - 1];
+            }
+            return merged;
+          });
         } catch (error) {
           console.error("[LiveIMUPanel] backfill incremental falhou", error);
         }
       }, 1_000),
-    [deviceId, prependMany, setOldest],
+    [deviceId],
   );
 
   useEffect(() => {
-    const leftEdge = activeDomain[0];
-    if (leftEdge - oldestLoaded <= BACKFILL_THRESHOLD_MS) {
-      fetchBackfill(Math.max(oldestLoaded - 1, 0));
+    const leftEdge = xDomain[0];
+    if (leftEdge - oldestTs <= BACKFILL_THRESHOLD_MS) {
+      fetchBackfill(Math.max(oldestTs - 1, 0));
     }
-  }, [activeDomain, oldestLoaded, fetchBackfill]);
+  }, [xDomain, oldestTs, fetchBackfill]);
 
-  const handleDataZoom = useMemo(
+  const handleRangeChange = useMemo(
     () =>
       debounce((range: [number, number]) => {
-        if (programmaticZoomRef.current) {
-          programmaticZoomRef.current = false;
+        if (ignoreZoomRef.current) {
+          ignoreZoomRef.current = false;
           return;
         }
         const next = clampDomain(range);
-        setXDomain(deviceId, next);
+        setIsLive(false);
+        setXDomain(next);
+        if (next[0] - oldestTs <= BACKFILL_THRESHOLD_MS) {
+          fetchBackfill(Math.max(oldestTs - 1, 0));
+        }
       }, 150),
-    [deviceId, setXDomain],
+    [oldestTs, fetchBackfill],
   );
 
-  const recenterNow = useCallback(() => {
-    pushDomain(getLiveDomain());
-  }, [getLiveDomain, pushDomain]);
+  const resumeLive = useCallback(() => {
+    const now = Date.now();
+    setIsLive(true);
+    setNowMs(now);
+    ignoreZoomRef.current = true;
+    setXDomain(clampDomain([now - WINDOW_MS, now]));
+  }, []);
+
+  const pauseLive = useCallback(() => {
+    setIsLive(false);
+  }, []);
+
+  const points = series;
+  const activeDomain = xDomain;
 
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
         <button
-          onClick={recenterNow}
+          onClick={resumeLive}
+          className={`px-2 py-1 rounded-2xl border ${isLive ? "border-emerald-400 bg-emerald-900/40" : "border-slate-700 bg-slate-900"} text-slate-100 hover:bg-slate-800`}
+        >
+          Ao vivo
+        </button>
+        <button
+          onClick={pauseLive}
           className="px-2 py-1 rounded-2xl border border-slate-700 bg-slate-900 text-slate-100 hover:bg-slate-800"
         >
-          Recentrar (agora)
+          Pausar
         </button>
         <span className="text-xs text-slate-400">
-          Janela {new Date(activeDomain[0]).toLocaleTimeString("pt-BR", { hour12: false })} →{" "}
+          Janela {new Date(activeDomain[0]).toLocaleTimeString("pt-BR", { hour12: false })} -{" "}
           {new Date(activeDomain[1]).toLocaleTimeString("pt-BR", { hour12: false })}
         </span>
       </div>
@@ -366,6 +415,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
       <div className="rounded-2xl border border-slate-800 bg-slate-900 p-3 shadow-lg">
         <div className="mb-1 text-sm font-semibold text-slate-200">Accel RMS (g)</div>
         <EChartSeries
+          id="imu-acc"
           data={points}
           lines={[
             { key: "imu_acc_rms_x", name: "Ax" },
@@ -380,6 +430,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
       <div className="rounded-2xl border border-slate-800 bg-slate-900 p-3 shadow-lg">
         <div className="mb-1 text-sm font-semibold text-slate-200">Gyro RMS</div>
         <EChartSeries
+          id="imu-gyro"
           data={points}
           lines={[
             { key: "imu_gyro_rms_x", name: "Gx" },
@@ -394,6 +445,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
       <div className="rounded-2xl border border-slate-800 bg-slate-900 p-3 shadow-lg">
         <div className="mb-1 text-sm font-semibold text-slate-200">Jerk RMS</div>
         <EChartSeries
+          id="imu-jerk"
           data={points}
           lines={[
             { key: "imu_jerk_rms_x", name: "Jx" },
@@ -406,8 +458,9 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
       </div>
 
       <div className="rounded-2xl border border-slate-800 bg-slate-900 p-3 shadow-lg">
-        <div className="mb-1 text-sm font-semibold text-slate-200">GNSS / Operação</div>
+        <div className="mb-1 text-sm font-semibold text-slate-200">GNSS / Operacao</div>
         <EChartSeries
+          id="imu-gnss"
           data={points}
           lines={[
             { key: "speed", name: "Speed (km/h)" },
@@ -416,14 +469,13 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           ]}
           height={160}
           xDomain={activeDomain}
-          showDataZoom
-          onRangeChange={handleDataZoom}
         />
       </div>
 
       <div className="rounded-2xl border border-slate-800 bg-slate-900 p-3 shadow-lg">
-        <div className="mb-1 text-sm font-semibold text-slate-200">Barômetro / Choque</div>
+        <div className="mb-1 text-sm font-semibold text-slate-200">Barometro / Choque</div>
         <EChartSeries
+          id="imu-baro"
           data={points}
           lines={[
             { key: "baro", name: "Baro" },
@@ -431,6 +483,8 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           ]}
           height={160}
           xDomain={activeDomain}
+          showDataZoom
+          onRangeChange={handleRangeChange}
         />
       </div>
     </div>
