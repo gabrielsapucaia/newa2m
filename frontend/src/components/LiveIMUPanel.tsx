@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import EChartSeries from "./EChartSeries";
-import type { LivePoint } from "../store/telemetry";
+import { useTelemetry, type LivePoint, EMPTY_POINTS } from "../store/telemetry";
 import { subscribeLastFrame, unsubscribeLastFrame } from "../lib/ws";
 import { getSeries2 } from "../lib/api";
 import { MINUTE_MS, debounce, throttle } from "../lib/timeutils";
@@ -168,116 +168,137 @@ function carrySeries(points: LivePointT[], seed?: LivePointT | null): { series: 
   return { series: out, last: prev };
 }
 
-function normalise(points: LivePointT[]): LivePointT[] {
-  if (points.length === 0) return [];
-  const sorted = [...points]
-    .map((p) => {
-      if (typeof p.t === "number" && Number.isFinite(p.t)) return p;
-      const parsed = Date.parse(p.ts);
-      const t = Number.isFinite(parsed) ? parsed : Date.now();
-      return { ...p, t };
-    })
-    .sort((a, b) => a.t - b.t);
-
-  const dedup: LivePointT[] = [];
-  let lastT: number | undefined;
-  for (const sample of sorted) {
-    if (!Number.isFinite(sample.t)) continue;
-    if (lastT === sample.t) {
-      dedup[dedup.length - 1] = sample;
-    } else {
-      dedup.push(sample);
-      lastT = sample.t;
-    }
-  }
-
-  if (dedup.length === 0) return [];
-
-  const latest = dedup[dedup.length - 1].t;
-  const cutoff = latest - MAX_WINDOW_MS;
-  return dedup.filter((sample) => sample.t >= cutoff);
-}
-
 function clampDomain([start, end]: [number, number]): [number, number] {
   if (!Number.isFinite(start) || !Number.isFinite(end)) {
     const now = Date.now();
     return [now - WINDOW_MS, now];
   }
   if (end <= start) {
-    return [end - 1_000, end + 1_000];
+    return [end - MINUTE_MS, end];
   }
-  if (end - start > MAX_WINDOW_MS) {
+  const span = end - start;
+  if (span < MINUTE_MS) {
+    return [end - MINUTE_MS, end];
+  }
+  if (span > MAX_WINDOW_MS) {
     return [end - MAX_WINDOW_MS, end];
   }
   return [start, end];
 }
 
 export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
-  const [series, setSeries] = useState<LivePointT[]>([]);
-  const [isLive, setIsLive] = useState(true);
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  const [xDomain, setXDomain] = useState<[number, number]>(() => {
-    const now = Date.now();
-    return [now - WINDOW_MS, now];
-  });
-  const [oldestTs, setOldestTs] = useState(() => Date.now());
+  const appendMany = useTelemetry((state) => state.appendMany);
+  const prependMany = useTelemetry((state) => state.prependMany);
+  const reset = useTelemetry((state) => state.reset);
+  const setOldest = useTelemetry((state) => state.setOldest);
+  const setXDomain = useTelemetry((state) => state.setXDomain);
+  const series = useTelemetry((state) => state.byDevice[deviceId]);
 
+  const points = useMemo<LivePointT[]>(() => (series?.points ?? EMPTY_POINTS) as LivePointT[], [series?.points]);
+  const storedDomain = series?.xDomain ?? null;
+  const oldestLoaded = series?.oldest ?? (points.length ? points[0].t : Date.now());
+
+  const [isLive, setIsLive] = useState(true);
+  const [autoNow, setAutoNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!isLive) return;
+    const id = window.setInterval(() => setAutoNow(Date.now()), TICK_MS) as unknown as number;
+    return () => window.clearInterval(id);
+  }, [isLive]);
+
+  const liveDomain: [number, number] = [autoNow - WINDOW_MS, autoNow];
+  const baseDomain = isLive ? liveDomain : storedDomain ?? liveDomain;
+  const activeDomain = clampDomain(baseDomain);
+
+  const programmaticZoomRef = useRef(false);
+  const lastKnownRef = useRef<LivePointT | null>(points.length ? points[points.length - 1] : null);
   const stagingRef = useRef<LivePointT[]>([]);
-  const lastKnownRef = useRef<LivePointT | null>(null);
-  const ignoreZoomRef = useRef(false);
   const requestedEndsRef = useRef<Set<number>>(new Set());
 
   useEffect(() => {
-    return () => {
-      unsubscribeLastFrame();
-    };
-  }, []);
+    if (points.length) {
+      lastKnownRef.current = points[points.length - 1];
+    }
+  }, [points]);
 
-  useEffect(() => {
-    let cancelled = false;
-    stagingRef.current = [];
-    requestedEndsRef.current.clear();
-    lastKnownRef.current = null;
-    setSeries([]);
+  const resumeLive = useCallback(() => {
     const now = Date.now();
     setIsLive(true);
-    setNowMs(now);
-    ignoreZoomRef.current = true;
-    setXDomain(clampDomain([now - WINDOW_MS, now]));
-    setOldestTs(now);
+    setAutoNow(now);
+    programmaticZoomRef.current = true;
+    setXDomain(deviceId, clampDomain([now - WINDOW_MS, now]));
+  }, [deviceId, setXDomain]);
+
+  const pauseLive = useCallback(() => {
+    const current = clampDomain([autoNow - WINDOW_MS, autoNow]);
+    programmaticZoomRef.current = true;
+    setXDomain(deviceId, current);
+    setIsLive(false);
+  }, [autoNow, deviceId, setXDomain]);
+
+  useEffect(() => {
+    let mounted = true;
+    stagingRef.current = [];
+    requestedEndsRef.current.clear();
 
     const hydrate = async () => {
-      try {
-        const seed = await getSeries2(deviceId, { bucket: "1s", window_sec: BACKFILL_CHUNK_MS / 1000 });
-        if (cancelled) return;
+      const attempt = async (params: { bucket: string; window_sec: number; end?: string }) => {
+        const seed = await getSeries2(deviceId, params);
+        if (!mounted) return;
         const rows = Array.isArray(seed?.data) ? (seed.data as RawSample[]) : [];
         const mapped = rows.map(toPoint);
         const carried = carrySeries(mapped);
-        const initial = normalise(carried.series);
-        setSeries(initial);
-        if (initial.length) {
-          setOldestTs(initial[0].t);
-          lastKnownRef.current = carried.last ?? initial[initial.length - 1];
+        reset(deviceId, carried.series);
+        if (carried.series.length) {
+          const oldest = Math.min(...carried.series.map((p) => p.t));
+          setOldest(deviceId, oldest);
+          lastKnownRef.current = carried.last;
+          if (isLive) {
+            const now = Date.now();
+            setAutoNow(now);
+            programmaticZoomRef.current = true;
+            setXDomain(deviceId, clampDomain([now - WINDOW_MS, now]));
+          }
         }
-      } catch (error) {
-        console.error("[LiveIMUPanel] backfill inicial falhou", error);
+      };
+
+      try {
+        await attempt({ bucket: "1s", window_sec: BACKFILL_CHUNK_MS / 1000 });
+      } catch {
+        try {
+          await attempt({ bucket: "10s", window_sec: BACKFILL_CHUNK_MS / 1000 });
+        } catch (error) {
+          console.error("[LiveIMUPanel] backfill inicial falhou", error);
+          if (mounted) {
+            reset(deviceId, []);
+            if (isLive) {
+              const now = Date.now();
+              setAutoNow(now);
+              programmaticZoomRef.current = true;
+              setXDomain(deviceId, clampDomain([now - WINDOW_MS, now]));
+            }
+          }
+        }
       }
     };
 
     void hydrate();
 
     return () => {
-      cancelled = true;
+      mounted = false;
     };
-  }, [deviceId]);
+  }, [deviceId, isLive, reset, setOldest, setXDomain]);
 
   useEffect(() => {
-    const stop = subscribeLastFrame(deviceId, (payload: RawSample) => {
+    const handleMessage = (payload: RawSample) => {
       const prev = stagingRef.current[stagingRef.current.length - 1] ?? lastKnownRef.current ?? undefined;
       const point = withCarry(toPoint(payload), prev);
       stagingRef.current.push(point);
       lastKnownRef.current = point;
-    });
+    };
+
+    const stop = subscribeLastFrame(deviceId, handleMessage);
 
     return () => {
       stop();
@@ -289,14 +310,14 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
     const flush = () => {
       if (!stagingRef.current.length) return;
       const batch = stagingRef.current.splice(0, stagingRef.current.length);
-      setSeries((prev) => {
-        const merged = normalise([...prev, ...batch]);
-        if (merged.length) {
-          setOldestTs(merged[0].t);
-          lastKnownRef.current = merged[merged.length - 1];
-        }
-        return merged;
-      });
+      appendMany(deviceId, batch);
+      lastKnownRef.current = batch[batch.length - 1] ?? lastKnownRef.current;
+      if (isLive && batch.length) {
+        const now = Date.now();
+        setAutoNow(now);
+        programmaticZoomRef.current = true;
+        setXDomain(deviceId, clampDomain([now - WINDOW_MS, now]));
+      }
     };
 
     const id = window.setInterval(flush, FLUSH_MS) as unknown as number;
@@ -304,23 +325,13 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
       window.clearInterval(id);
       flush();
     };
-  }, []);
+  }, [appendMany, deviceId, isLive, setXDomain]);
 
   useEffect(() => {
-    const ticker = window.setInterval(() => {
-      setNowMs(Date.now());
-    }, TICK_MS) as unknown as number;
     return () => {
-      window.clearInterval(ticker);
+      unsubscribeLastFrame();
     };
   }, []);
-
-  useEffect(() => {
-    if (!isLive) return;
-    const liveDomain: [number, number] = [nowMs - WINDOW_MS, nowMs];
-    ignoreZoomRef.current = true;
-    setXDomain(clampDomain(liveDomain));
-  }, [isLive, nowMs]);
 
   const fetchBackfill = useMemo(
     () =>
@@ -336,60 +347,40 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           });
           const rows = Array.isArray(seed?.data) ? (seed.data as RawSample[]) : [];
           if (!rows.length) return;
-          const carried = carrySeries(rows.map(toPoint));
-          setSeries((prev) => {
-            const merged = normalise([...carried.series, ...prev]);
-            if (merged.length) {
-              setOldestTs(merged[0].t);
-              lastKnownRef.current = merged[merged.length - 1];
-            }
-            return merged;
-          });
+          const carried = carrySeries(rows.map(toPoint)).series;
+          prependMany(deviceId, carried);
+          const newestOld = Math.min(...carried.map((p) => p.t));
+          setOldest(deviceId, newestOld);
         } catch (error) {
           console.error("[LiveIMUPanel] backfill incremental falhou", error);
         }
       }, 1_000),
-    [deviceId],
+    [deviceId, prependMany, setOldest],
   );
 
   useEffect(() => {
-    const leftEdge = xDomain[0];
-    if (leftEdge - oldestTs <= BACKFILL_THRESHOLD_MS) {
-      fetchBackfill(Math.max(oldestTs - 1, 0));
+    const leftEdge = activeDomain[0];
+    if (leftEdge - oldestLoaded <= BACKFILL_THRESHOLD_MS) {
+      fetchBackfill(Math.max(oldestLoaded - 1, 0));
     }
-  }, [xDomain, oldestTs, fetchBackfill]);
+  }, [activeDomain, oldestLoaded, fetchBackfill]);
 
-  const handleRangeChange = useMemo(
+  const handleDataZoom = useMemo(
     () =>
       debounce((range: [number, number]) => {
-        if (ignoreZoomRef.current) {
-          ignoreZoomRef.current = false;
+        if (programmaticZoomRef.current) {
+          programmaticZoomRef.current = false;
           return;
         }
         const next = clampDomain(range);
         setIsLive(false);
-        setXDomain(next);
-        if (next[0] - oldestTs <= BACKFILL_THRESHOLD_MS) {
-          fetchBackfill(Math.max(oldestTs - 1, 0));
+        setXDomain(deviceId, next);
+        if (next[0] - oldestLoaded <= BACKFILL_THRESHOLD_MS) {
+          fetchBackfill(Math.max(oldestLoaded - 1, 0));
         }
       }, 150),
-    [oldestTs, fetchBackfill],
+    [deviceId, fetchBackfill, oldestLoaded, setXDomain],
   );
-
-  const resumeLive = useCallback(() => {
-    const now = Date.now();
-    setIsLive(true);
-    setNowMs(now);
-    ignoreZoomRef.current = true;
-    setXDomain(clampDomain([now - WINDOW_MS, now]));
-  }, []);
-
-  const pauseLive = useCallback(() => {
-    setIsLive(false);
-  }, []);
-
-  const points = series;
-  const activeDomain = xDomain;
 
   return (
     <div className="space-y-4">
@@ -484,7 +475,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           height={160}
           xDomain={activeDomain}
           showDataZoom
-          onRangeChange={handleRangeChange}
+          onRangeChange={handleDataZoom}
         />
       </div>
     </div>
