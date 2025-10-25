@@ -256,6 +256,98 @@ export async function fetchDeviceImuSeries(
   return response.data.map(mapImuRow);
 }
 
+export interface RawTelemetryPoint {
+  ts: string;
+  seq_id: number | null;
+  gnss: {
+    lat: number | null;
+    lon: number | null;
+    speed: number | null;
+    heading: number | null;
+    alt: number | null;
+    accuracy_m: number | null;
+    cn0_avg: number | null;
+    num_sats: number | null;
+    sats_used: number | null;
+    speed_accuracy_mps?: number | null;
+  };
+  imu: {
+    pitch_deg: number | null;
+    roll_deg: number | null;
+    yaw_deg: number | null;
+    yaw_rate_deg_s?: number | null;
+    acc_norm_rms: number | null;
+    gyro_norm_rms: number | null;
+    jerk_x_rms: number | null;
+    jerk_y_rms: number | null;
+    jerk_z_rms: number | null;
+    jerk_norm_rms: number | null;
+    shock_score: number | null;
+    shock_level: string | null;
+    acc_x_rms?: number | null;
+    acc_y_rms?: number | null;
+    acc_z_rms?: number | null;
+    gyro_x_rms?: number | null;
+    gyro_y_rms?: number | null;
+    gyro_z_rms?: number | null;
+    mag_field_uT?: number | null;
+  };
+  power: {
+    battery_percent: number | null;
+    charging: boolean | null;
+  };
+  network: {
+    wifi_ssid: string | null;
+    wifi_strength_dbm: number | null;
+  };
+  meta: {
+    operator_id: string | null;
+    equipment_tag: string | null;
+    schema_version: string | null;
+    app_version: string | null;
+    hardware: string | null;
+    uptime_s: number | null;
+  };
+  raw_payload: Record<string, unknown> | null;
+}
+
+export interface RawTelemetryStats {
+  speed_max: number | null;
+  shock_score_p95: number | null;
+  shock_score_max: number | null;
+  jerk_norm_rms_p95: number | null;
+  battery_min: number | null;
+  battery_max: number | null;
+}
+
+export interface RawTelemetryResponse {
+  device_id: string;
+  from_ts: string | null;
+  to_ts: string | null;
+  points: RawTelemetryPoint[];
+  stats: RawTelemetryStats | null;
+  next_page_after_ts: string | null;
+}
+
+export interface RawTelemetryQuery {
+  from_ts?: string;
+  to_ts?: string;
+  page_after_ts?: string;
+  limit?: number;
+}
+
+export async function fetchRawTelemetry(
+  deviceId: string,
+  { from_ts, to_ts, page_after_ts, limit }: RawTelemetryQuery = {},
+): Promise<RawTelemetryResponse> {
+  return request<RawTelemetryResponse>(`/devices/${encodeURIComponent(deviceId)}/raw`, undefined, {
+    from_ts,
+    to_ts,
+    page_after_ts,
+    limit,
+  });
+}
+
 export function metersPerSecondToKmH(value: number | null | undefined): number {
   if (!value) return 0;
   return Number((value * 3.6).toFixed(2));

@@ -11,7 +11,7 @@ import psycopg
 import psycopg.rows
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 
-from .routes_raw import router as raw_router
+from routes_raw import router as raw_router
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
