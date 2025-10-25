@@ -16,7 +16,7 @@ export type ChartProps = {
   syncId?: string;
   syncMethod?: "value" | "index";
   brush?: boolean;
-  brushProps?: Record<string, unknown>;
+  onBrushChange?: (range: { startIndex?: number; endIndex?: number }) => void;
 };
 
 export type ChartEngine = "recharts"; // futuro: "uplot", "echarts" etc

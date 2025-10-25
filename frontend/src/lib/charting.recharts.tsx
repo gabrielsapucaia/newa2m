@@ -1,4 +1,4 @@
-﻿import { ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, Legend, Brush } from "recharts";
+import { ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, Legend, Brush } from "recharts";
 import type { ChartProps } from "./charting";
 
 const fmtX = (v: any) => {
@@ -33,11 +33,18 @@ export function XYLinesChart({ data, lines, height = 160, xKey = "t", yDomain, l
   );
 }
 
-export function XYLinesWithBrush({ brush = true, brushProps, ...rest }: ChartProps) {
+export function XYLinesWithBrush(props: ChartProps & { brush?: boolean }) {
+  const { brush, ...rest } = props;
   const xKey = rest.xKey ?? "t";
+  const data = Array.isArray(rest.data) ? rest.data : [];
+  const len = data.length;
+  const endIndex = len > 0 ? len - 1 : 0;
+  const span = Math.max(1, Math.floor(len * 0.2));
+  const startIndex = Math.max(0, endIndex - span);
+
   return (
     <ResponsiveContainer width="100%" height={rest.height ?? 180}>
-      <LineChart data={rest.data} syncId={rest.syncId} syncMethod={rest.syncMethod ?? "value"}>
+      <LineChart data={data} syncId={rest.syncId} syncMethod={rest.syncMethod ?? "value"}>
         <CartesianGrid strokeDasharray="3 3" />
         <XAxis
           dataKey={xKey}
@@ -53,7 +60,7 @@ export function XYLinesWithBrush({ brush = true, brushProps, ...rest }: ChartPro
         {rest.lines.map((l) => (
           <Line key={l.key} type="monotone" dot={false} isAnimationActive={false} dataKey={l.key} name={l.name ?? l.key} />
         ))}
-        {brush && <Brush travellerWidth={12} height={24} dataKey={xKey} {...(brushProps as Record<string, unknown>)} />}
+        {brush && len >= 2 && <Brush dataKey={xKey} startIndex={startIndex} endIndex={endIndex} travellerWidth={8} height={18} />}
       </LineChart>
     </ResponsiveContainer>
   );

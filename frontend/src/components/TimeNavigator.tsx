@@ -21,30 +21,46 @@ function computeIndices(data: LivePoint[], domain: [number, number]) {
 }
 
 export default function TimeNavigator({ data, xDomain, onBrush, syncId = "imu" }: Props) {
+  if (!Array.isArray(data) || data.length < 2) {
+    return (
+      <div className="mt-2 h-[120px] rounded-2xl bg-neutral-900/40 ring-1 ring-neutral-800 flex items-center justify-center text-xs text-neutral-500">
+        Aguardando dados…
+      </div>
+    );
+  }
+
   const lines = useMemo(() => [{ key: "speed", name: "Speed" }], []);
   const { startIndex, endIndex } = useMemo(() => computeIndices(data, xDomain), [data, xDomain]);
 
-  const brushProps = useMemo(() => ({
-    startIndex,
-    endIndex,
-    onChange: (range: { startIndex?: number; endIndex?: number }) => {
-      if (!onBrush || !data.length) return;
-      const sIndex = range.startIndex ?? startIndex;
-      const eIndex = range.endIndex ?? endIndex;
-      const safeStart = Math.max(0, Math.min(sIndex, data.length - 1));
-      const safeEnd = Math.max(safeStart, Math.min(eIndex, data.length - 1));
-      const startPoint = data[safeStart];
-      const endPoint = data[safeEnd];
-      if (!startPoint || !endPoint) return;
-      onBrush([startPoint.t, endPoint.t]);
-    },
-  }), [data, startIndex, endIndex, onBrush]);
+  const handleBrushChange = useMemo(
+    () =>
+      (range: { startIndex?: number; endIndex?: number }) => {
+        if (!onBrush) return;
+        const sIndex = range.startIndex ?? startIndex;
+        const eIndex = range.endIndex ?? endIndex;
+        const safeStart = Math.max(0, Math.min(sIndex, data.length - 1));
+        const safeEnd = Math.max(safeStart, Math.min(eIndex, data.length - 1));
+        const startPoint = data[safeStart];
+        const endPoint = data[safeEnd];
+        if (!startPoint || !endPoint) return;
+        onBrush([startPoint.t, endPoint.t]);
+      },
+    [data, endIndex, onBrush, startIndex],
+  );
 
   return (
     <div className="mt-2">
-      <XYLinesWithBrush data={data} lines={lines} height={120} xDomain={xDomain} syncId={syncId} brushProps={brushProps} />
+      <XYLinesWithBrush
+        data={data}
+        lines={lines}
+        height={120}
+        xDomain={xDomain}
+        syncId={syncId}
+        onBrushChange={handleBrushChange}
+        brush
+      />
       <div className="mt-1 text-[11px] text-slate-400">
-        Arraste para revisar o passado; clique em “Ao vivo” para retomar.
+        Arraste para revisar o passado; clique em "Ao vivo" para retomar.
       </div>
     </div>
   );
