@@ -7,7 +7,9 @@ const fmtX = (v: any) => {
   return new Date(n).toLocaleTimeString("pt-BR", { hour12: false });
 };
 
-export function XYLinesChart({ data, lines, height = 160, xKey = "t", yDomain, legend = true }: ChartProps) {
+export function XYLinesChart({ data, lines, height = 160, xKey = "t", xDomain, yDomain, legend = true }: ChartProps) {
+  const axisDomain = (xDomain ?? ["auto", "auto"]) as [number, number] | ["auto", "auto"];
+
   return (
     <ResponsiveContainer width="100%" height={height}>
       <LineChart data={data}>
@@ -16,7 +18,7 @@ export function XYLinesChart({ data, lines, height = 160, xKey = "t", yDomain, l
           dataKey={xKey}
           type="number"
           tickFormatter={fmtX}
-          domain={["auto", "auto"]}
+          domain={axisDomain as any}
           allowDataOverflow
           minTickGap={20}
         />

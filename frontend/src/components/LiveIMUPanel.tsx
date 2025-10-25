@@ -1,311 +1,215 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { XYLinesChart } from "../lib/chart";
+import { useTelemetry, EMPTY_POINTS } from "../store/telemetry";
+import type { LivePoint } from "../store/telemetry";
+import { subscribeLastFrame, unsubscribeLastFrame } from "../lib/ws";
 import { getSeries2 } from "../lib/api";
-import { subscribeLastFrame } from "../lib/ws";
-import { useTelemetry, type LivePoint, EMPTY_POINTS, LIVE_WINDOW_MS } from "../store/telemetry";
 
-type RawSample = Record<string, unknown>;
+type LivePointT = LivePoint & { t: number };
 
-const PRIMARY_BUCKET = { bucket: "1s", window_sec: 300 } as const;
-const FALLBACK_BUCKET = { bucket: "10s", window_sec: 600 } as const;
-const SLIDE_INTERVAL_MS = 500;
-const FLUSH_INTERVAL_MS = 5000;
-
-function safeNumber(value: unknown): number | null {
-  if (value === null || value === undefined) return null;
-  const num = Number(value);
-  return Number.isFinite(num) ? num : null;
+function toMs(ts: any): number {
+  const n = Date.parse(ts);
+  return Number.isFinite(n) ? n : Date.now();
 }
 
-function toMillis(value: unknown): number {
-  if (typeof value === "string" && value) {
-    const parsed = Date.parse(value);
-    if (Number.isFinite(parsed)) {
-      return parsed;
-    }
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value > 10_000_000_000 ? value : value * 1000;
-  }
-  return Date.now();
-}
-
-function readValue(source: RawSample, key: string): unknown {
-  if (key in source) {
-    return source[key];
-  }
-  return undefined;
-}
-
-function pickNumber(source: RawSample, keys: string[]): number | null {
-  for (const key of keys) {
-    const numeric = safeNumber(readValue(source, key));
-    if (numeric !== null) return numeric;
-  }
-  return null;
-}
-
-function pickShockLevel(source: RawSample): number | null {
-  const numeric = pickNumber(source, ["shock_level", "imu.motion.shock_score"]);
-  if (numeric !== null) return numeric;
-  const raw = readValue(source, "imu.motion.shock_level") ?? readValue(source, "shock_level");
-  if (typeof raw === "string") {
-    const normalized = raw.toLowerCase();
-    if (normalized === "low") return 1;
-    if (normalized === "medium") return 2;
-    if (normalized === "high") return 3;
-  }
-  return null;
-}
-
-function mergeSource(raw: RawSample): RawSample {
-  const payload = raw.payload;
-  if (payload && typeof payload === "object") {
-    return { ...(payload as RawSample), ...raw };
-  }
-  return raw;
-}
-
-function toPoint(raw: RawSample): LivePoint {
-  const merged = mergeSource(raw);
-  const tsValue =
-    readValue(merged, "ts") ??
-    readValue(merged, "timestamp") ??
-    readValue(merged, "ts_epoch") ??
-    readValue(merged, "gnss.ts") ??
-    readValue(merged, "payload.ts");
-
-  const speedMs = pickNumber(merged, ["speed", "gnss.speed"]);
-  const cn0 = pickNumber(merged, ["cn0_avg", "cn0", "gnss.cn0_avg", "gnss.cn0.p50"]);
-  const sats = pickNumber(merged, ["sats_used", "sats", "gnss.num_sats", "gnss.sats_used"]);
-  const baro = pickNumber(merged, ["baro", "pressure", "baro.pressure_hpa", "baro.altitude_m"]);
-  const accX = pickNumber(merged, ["imu_acc_rms_x", "imu_rms_x", "imu.acc.x.rms", "imu.linear_acc.x.rms"]);
-  const accY = pickNumber(merged, ["imu_acc_rms_y", "imu_rms_y", "imu.acc.y.rms", "imu.linear_acc.y.rms"]);
-  const accZ = pickNumber(merged, ["imu_acc_rms_z", "imu_rms_z", "imu.acc.z.rms", "imu.linear_acc.z.rms"]);
-  const gyroX = pickNumber(merged, ["imu_gyro_rms_x", "imu.gyro.x.rms"]);
-  const gyroY = pickNumber(merged, ["imu_gyro_rms_y", "imu.gyro.y.rms"]);
-  const gyroZ = pickNumber(merged, ["imu_gyro_rms_z", "imu.gyro.z.rms"]);
-  const jerkX = pickNumber(merged, ["imu_jerk_rms_x", "jerk_x", "imu.jerk.x.rms"]);
-  const jerkY = pickNumber(merged, ["imu_jerk_rms_y", "jerk_y", "imu.jerk.y.rms"]);
-  const jerkZ = pickNumber(merged, ["imu_jerk_rms_z", "jerk_z", "imu.jerk.z.rms"]);
-  const shockLevel = pickShockLevel(merged);
-
-  const t = toMillis(tsValue);
-
+function toPoint(r: any): LivePointT {
+  const ts = r.ts ?? r.time ?? new Date().toISOString();
   return {
-    ts: new Date(t).toISOString(),
-    t,
-    speed: speedMs !== null ? Number((speedMs * 3.6).toFixed(3)) : null,
-    cn0_avg: cn0,
-    sats_used: sats,
-    baro,
-    imu_acc_rms_x: accX,
-    imu_acc_rms_y: accY,
-    imu_acc_rms_z: accZ,
-    imu_gyro_rms_x: gyroX,
-    imu_gyro_rms_y: gyroY,
-    imu_gyro_rms_z: gyroZ,
-    imu_jerk_rms_x: jerkX,
-    imu_jerk_rms_y: jerkY,
-    imu_jerk_rms_z: jerkZ,
-    shock_level: shockLevel,
+    ts,
+    t: toMs(ts),
+    speed: r.speed ?? null,
+    cn0_avg: r.cn0_avg ?? r.cn0 ?? null,
+    sats_used: r.sats_used ?? r.sats ?? null,
+    baro: r.baro ?? r.pressure ?? null,
+    imu_acc_rms_x: r.imu_acc_rms_x ?? null,
+    imu_acc_rms_y: r.imu_acc_rms_y ?? null,
+    imu_acc_rms_z: r.imu_acc_rms_z ?? null,
+    imu_gyro_rms_x: r.imu_gyro_rms_x ?? null,
+    imu_gyro_rms_y: r.imu_gyro_rms_y ?? null,
+    imu_gyro_rms_z: r.imu_gyro_rms_z ?? null,
+    imu_jerk_rms_x: r.imu_jerk_rms_x ?? null,
+    imu_jerk_rms_y: r.imu_jerk_rms_y ?? null,
+    imu_jerk_rms_z: r.imu_jerk_rms_z ?? null,
+    shock_level: r.shock_level ?? null,
   };
 }
 
+const WINDOW_MS = 10 * 60 * 1000; // 10 min
+const FLUSH_MS = 5 * 1000; // 5 s
+const TICK_MS = 500; // deslize da janela a cada 500 ms
+
 export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
   const [isLive, setIsLive] = useState(true);
-  const pushMany = useTelemetry((state) => state.pushMany);
-  const reset = useTelemetry((state) => state.reset);
-  const clear = useTelemetry((state) => state.clear);
-  const trimBefore = useTelemetry((state) => state.trimBefore);
-  const points = useTelemetry((state) => state.byDevice[deviceId]?.points ?? EMPTY_POINTS);
-  const pendingRef = useRef<LivePoint[]>([]);
+  const appendMany = useTelemetry((s) => s.appendMany);
+  const reset = useTelemetry((s) => s.reset);
+  const pointsRaw = useTelemetry((s) => s.byDevice[deviceId]?.points ?? EMPTY_POINTS);
 
+  // adapt points para incluir 't' caso ainda n?o tenha (compat)
+  const points = useMemo<LivePointT[]>(() => {
+    if (!pointsRaw.length) return [];
+    const first = pointsRaw[0] as any;
+    if (typeof first.t === "number") return pointsRaw as any;
+    return pointsRaw.map((p: any) => ({ ...p, t: Date.parse(p.ts) || Date.now() }));
+  }, [pointsRaw]);
+
+  // buffer de est?gio (recebe 1 Hz do WS; flush em lote)
+  const stagingRef = useRef<LivePointT[]>([]);
+  const flushTimer = useRef<number | undefined>(undefined);
+
+  // backfill inicial
   useEffect(() => {
-    setIsLive(true);
-    pendingRef.current = [];
-    return () => {
-      clear(deviceId);
-      pendingRef.current = [];
-    };
-  }, [clear, deviceId]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const attempt = async (params: { bucket: string; window_sec: number }) => {
-      const seed = await getSeries2(deviceId, params);
-      const payload = Array.isArray(seed?.data) ? (seed?.data as RawSample[]) : [];
-      const mapped = payload.map((row) => toPoint(row));
-      if (!cancelled) {
-        reset(deviceId, mapped);
-        trimBefore(deviceId, Date.now() - LIVE_WINDOW_MS);
-      }
-    };
-
-    const load = async () => {
+    let mounted = true;
+    (async () => {
       try {
-        await attempt(PRIMARY_BUCKET);
-      } catch (error) {
+        const seed = await getSeries2(deviceId, { bucket: "1s", window_sec: 300 });
+        const arr = (seed?.data ?? []).map((r: any) => toPoint(r));
+        if (mounted) reset(deviceId, arr);
+      } catch {
         try {
-          await attempt(FALLBACK_BUCKET);
-        } catch (fallbackError) {
-          if (!cancelled) {
-            reset(deviceId, []);
-          }
-          console.error("LiveIMUPanel backfill falhou", error, fallbackError);
-        }
+          const seed = await getSeries2(deviceId, { bucket: "10s", window_sec: 600 });
+          const arr = (seed?.data ?? []).map((r: any) => toPoint(r));
+          if (mounted) reset(deviceId, arr);
+        } catch {}
       }
-    };
-
-    void load();
-
+    })();
     return () => {
-      cancelled = true;
+      mounted = false;
     };
-  }, [deviceId, reset, trimBefore]);
+  }, [deviceId, reset]);
 
+  // WS: acumula em stagingRef (1 Hz)
   useEffect(() => {
-    if (!isLive) return;
-
-    const tick = () => {
-      const cutoff = Date.now() - LIVE_WINDOW_MS;
-      trimBefore(deviceId, cutoff);
-    };
-
-    tick();
-    const id = window.setInterval(tick, SLIDE_INTERVAL_MS);
-
+    if (!isLive) {
+      unsubscribeLastFrame();
+      return;
+    }
+    function onMsg(m: any) {
+      stagingRef.current.push(toPoint(m));
+    }
+    subscribeLastFrame(deviceId, onMsg);
     return () => {
-      window.clearInterval(id);
+      unsubscribeLastFrame();
     };
-  }, [deviceId, isLive, trimBefore]);
+  }, [deviceId, isLive]);
 
+  // Flush em lote a cada 5 s
   useEffect(() => {
-    if (!isLive) return;
-
-    pendingRef.current = [];
-
-    const stop = subscribeLastFrame(deviceId, (message) => {
-      pendingRef.current.push(toPoint(message as RawSample));
-    });
-
-    const flush = () => {
-      if (!pendingRef.current.length) return;
-      const batch = pendingRef.current.splice(0, pendingRef.current.length);
-      pushMany(deviceId, batch);
-      trimBefore(deviceId, Date.now() - LIVE_WINDOW_MS);
-    };
-
-    const intervalId = window.setInterval(flush, FLUSH_INTERVAL_MS);
-
-    return () => {
-      if (pendingRef.current.length) {
-        flush();
+    if (!isLive) {
+      if (flushTimer.current) window.clearInterval(flushTimer.current);
+      flushTimer.current = undefined;
+      return;
+    }
+    flushTimer.current = window.setInterval(() => {
+      const batch = stagingRef.current;
+      if (batch.length) {
+        appendMany(deviceId, batch);
+        stagingRef.current = [];
       }
-      stop();
-      window.clearInterval(intervalId);
+    }, FLUSH_MS) as unknown as number;
+
+    return () => {
+      if (flushTimer.current) window.clearInterval(flushTimer.current);
+      flushTimer.current = undefined;
     };
-  }, [deviceId, isLive, pushMany, trimBefore]);
+  }, [deviceId, isLive, appendMany]);
 
-  const liveButtonClasses = isLive
-    ? "border-sky-600 bg-sky-500 text-white shadow-sm"
-    : "border-slate-300 bg-white text-slate-700 hover:bg-slate-100";
-
-  const pauseButtonClasses = !isLive
-    ? "border-sky-600 bg-sky-500 text-white shadow-sm"
-    : "border-slate-300 bg-white text-slate-700 hover:bg-slate-100";
+  // "deslizamento" da janela: atualiza apenas o dom?nio de X
+  const [nowMs, setNowMs] = useState<number>(Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNowMs(Date.now()), TICK_MS);
+    return () => window.clearInterval(id);
+  }, []);
+  const xDomain: [number, number] = [nowMs - WINDOW_MS, nowMs];
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-3">
-        <button
-          type="button"
-          onClick={() => setIsLive(true)}
-          className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${liveButtonClasses}`}
-        >
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <button onClick={() => setIsLive(true)} className="px-2 py-1 rounded-2xl border shadow-sm hover:bg-gray-50">
           Ao vivo
         </button>
-        <button
-          type="button"
-          onClick={() => setIsLive(false)}
-          className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${pauseButtonClasses}`}
-        >
+        <button onClick={() => setIsLive(false)} className="px-2 py-1 rounded-2xl border shadow-sm hover:bg-gray-50">
           Pausar
         </button>
-        <span className="text-xs text-slate-500">Ultimos ~10 min | {points.length} pts</span>
+        <span className="text-xs text-gray-600">?ltimos ~10 min ? {points.length} pts</span>
       </div>
 
-      <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
-        <div className="mb-2 text-sm font-semibold text-slate-700">Accel RMS (g)</div>
+      <div className="p-3 bg-white rounded-2xl shadow-sm ring-1 ring-gray-100">
+        <div className="text-sm font-semibold mb-1">Accel RMS (g)</div>
         <XYLinesChart
           data={points}
-          xKey="t"
+          xDomain={xDomain}
           lines={[
             { key: "imu_acc_rms_x", name: "Ax" },
             { key: "imu_acc_rms_y", name: "Ay" },
             { key: "imu_acc_rms_z", name: "Az" },
           ]}
-          height={190}
+          height={180}
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
-          <div className="mb-2 text-sm font-semibold text-slate-700">Gyro RMS</div>
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+        <div className="p-3 bg-white rounded-2xl shadow-sm ring-1 ring-gray-100">
+          <div className="text-sm font-semibold mb-1">Gyro RMS</div>
           <XYLinesChart
             data={points}
-            xKey="t"
+            xDomain={xDomain}
             lines={[
               { key: "imu_gyro_rms_x", name: "Gx" },
               { key: "imu_gyro_rms_y", name: "Gy" },
               { key: "imu_gyro_rms_z", name: "Gz" },
             ]}
-            height={170}
+            height={160}
           />
         </div>
-        <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
-          <div className="mb-2 text-sm font-semibold text-slate-700">Jerk RMS</div>
+        <div className="p-3 bg-white rounded-2xl shadow-sm ring-1 ring-gray-100">
+          <div className="text-sm font-semibold mb-1">Jerk RMS</div>
           <XYLinesChart
             data={points}
-            xKey="t"
+            xDomain={xDomain}
             lines={[
               { key: "imu_jerk_rms_x", name: "Jx" },
               { key: "imu_jerk_rms_y", name: "Jy" },
               { key: "imu_jerk_rms_z", name: "Jz" },
             ]}
-            height={170}
+            height={160}
           />
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
-          <div className="mb-2 text-sm font-semibold text-slate-700">GNSS / Operacao</div>
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+        <div className="p-3 bg-white rounded-2xl shadow-sm ring-1 ring-gray-100">
+          <div className="text-sm font-semibold mb-1">GNSS / Opera??o</div>
           <XYLinesChart
             data={points}
-            xKey="t"
+            xDomain={xDomain}
             lines={[
               { key: "speed", name: "Speed (km/h)" },
               { key: "cn0_avg", name: "CN0 (dB-Hz)" },
               { key: "sats_used", name: "#Sats" },
             ]}
-            height={170}
+            height={160}
           />
         </div>
-        <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
-          <div className="mb-2 text-sm font-semibold text-slate-700">Barometro / Choque</div>
+        <div className="p-3 bg-white rounded-2xl shadow-sm ring-1 ring-gray-100">
+          <div className="text-sm font-semibold mb-1">Bar?metro / Choque</div>
           <XYLinesChart
             data={points}
-            xKey="t"
+            xDomain={xDomain}
             lines={[
               { key: "baro", name: "Baro" },
               { key: "shock_level", name: "Shock" },
             ]}
-            height={170}
+            height={160}
           />
         </div>
       </div>
+
+      {/* Aplicar dom?nio de X via CSS trick: usamos style var e um observer? N?o necess?rio.
+         Como o LineChart l? o XAxis do adapter, e ele usa domain auto,
+         definimos domain global pelo rel?gio: re-render a cada 500ms d? a sensa??o de deslizamento.
+         (Recharts refaz eixos; como n?o h? anima??o em linhas, ? est?vel.)
+      */}
+      <style>{`:root{--panel-bg:#fff}`}</style>
     </div>
   );
 }

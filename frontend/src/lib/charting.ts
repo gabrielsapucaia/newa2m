@@ -10,6 +10,7 @@ export type ChartProps = {
   lines: LineSpec[];
   height?: number; // px
   xKey?: string; // default 'ts'
+  xDomain?: [number, number];
   yDomain?: [number | undefined, number | undefined];
   legend?: boolean;
 };

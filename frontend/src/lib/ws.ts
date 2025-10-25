@@ -24,7 +24,12 @@ function safeClose(socket: WebSocket) {
 export type LastFramePayload = Record<string, unknown>;
 export type LastFrameUnsubscribe = () => void;
 
+let activeSocket: WebSocket | undefined;
+let activeUnsubscribe: LastFrameUnsubscribe | undefined;
+
 export function subscribeLastFrame(deviceId: string, onMsg: (payload: LastFramePayload) => void): LastFrameUnsubscribe {
+  unsubscribeLastFrame();
+
   const socket = new WebSocket(`${wsUrl()}?device_id=${encodeURIComponent(deviceId)}`);
 
   socket.onmessage = (event) => {
@@ -37,14 +42,38 @@ export function subscribeLastFrame(deviceId: string, onMsg: (payload: LastFrameP
   };
 
   socket.onclose = () => {
-    // reconexão futura pode ser adicionada aqui
+    if (activeSocket === socket) {
+      activeSocket = undefined;
+      activeUnsubscribe = undefined;
+    }
   };
 
-  return () => {
+  const unsubscribe = () => {
     try {
       safeClose(socket);
     } catch (error) {
       console.error("Erro ao encerrar WS", error);
+    } finally {
+      if (activeSocket === socket) {
+        activeSocket = undefined;
+        activeUnsubscribe = undefined;
+      }
     }
   };
+
+  activeSocket = socket;
+  activeUnsubscribe = unsubscribe;
+
+  return unsubscribe;
+}
+
+export function unsubscribeLastFrame() {
+  if (activeUnsubscribe) {
+    try {
+      activeUnsubscribe();
+    } finally {
+      activeUnsubscribe = undefined;
+      activeSocket = undefined;
+    }
+  }
 }
