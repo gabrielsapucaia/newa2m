@@ -1,10 +1,5 @@
 import { API } from "./api";
 
-type Sub = { deviceId: string; onMsg: (payload: unknown) => void };
-
-let ws: WebSocket | null = null;
-let current: Sub | null = null;
-
 function wsUrl() {
   return API.replace(/^http/, "ws") + "/ws/last";
 }
@@ -26,33 +21,30 @@ function safeClose(socket: WebSocket) {
   socket.close();
 }
 
-export function subscribeLastFrame(deviceId: string, onMsg: (payload: unknown) => void) {
-  unsubscribeLastFrame();
+export type LastFramePayload = Record<string, unknown>;
+export type LastFrameUnsubscribe = () => void;
 
-  current = { deviceId, onMsg };
-  ws = new WebSocket(`${wsUrl()}?device_id=${encodeURIComponent(deviceId)}`);
+export function subscribeLastFrame(deviceId: string, onMsg: (payload: LastFramePayload) => void): LastFrameUnsubscribe {
+  const socket = new WebSocket(`${wsUrl()}?device_id=${encodeURIComponent(deviceId)}`);
 
-  ws.onmessage = (event) => {
+  socket.onmessage = (event) => {
     try {
-      current?.onMsg(JSON.parse(event.data));
+      const parsed = JSON.parse(event.data) as LastFramePayload;
+      onMsg(parsed);
     } catch (error) {
       console.error("Falha ao decodificar mensagem WS", error);
     }
   };
 
-  ws.onclose = () => {
-    // opcional: reconectar dependendo da necessidade futura
+  socket.onclose = () => {
+    // reconexão futura pode ser adicionada aqui
   };
-}
 
-export function unsubscribeLastFrame() {
-  if (ws) {
+  return () => {
     try {
-      safeClose(ws);
+      safeClose(socket);
     } catch (error) {
       console.error("Erro ao encerrar WS", error);
     }
-  }
-  ws = null;
-  current = null;
+  };
 }

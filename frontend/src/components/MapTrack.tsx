@@ -3,7 +3,7 @@ import { MapContainer, Marker, Polyline, TileLayer, useMap } from "react-leaflet
 import type { LatLngTuple, Marker as LeafletMarker } from "leaflet";
 import L from "leaflet";
 import { getSeries2, metersPerSecondToKmH } from "../lib/api";
-import { subscribeLastFrame, unsubscribeLastFrame } from "../lib/ws";
+import { subscribeLastFrame } from "../lib/ws";
 import SpeedLegend from "./SpeedLegend";
 import MapStyleToggle from "./MapStyleToggle";
 import { useUI } from "../store/ui";
@@ -24,10 +24,6 @@ const DEFAULT_CENTER: LatLngTuple = [-10, -48];
 const MAX_POINTS = 20000;
 
 type Pt = { ts: string; lat: number; lon: number; speed?: number | null };
-
-type Series2Response = {
-  data?: Array<Record<string, unknown>>;
-};
 
 function pointKey(point: Pt) {
   return `${point.ts}-${point.lat}-${point.lon}`;
@@ -69,6 +65,7 @@ export default function MapTrack({ deviceId }: { deviceId: string }) {
   const loadingRef = useRef(false);
   const markerRef = useRef<LeafletMarker | null>(null);
   const animRef = useRef<number | null>(null);
+  const wsCleanupRef = useRef<(() => void) | null>(null);
   const { liveMode: isLive, mapStyle, setMapStyle } = useUI();
 
   useEffect(() => {
@@ -76,9 +73,9 @@ export default function MapTrack({ deviceId }: { deviceId: string }) {
     const fetchInitial = async () => {
       loadingRef.current = true;
       try {
-        const resp = (await getSeries2(deviceId, { bucket: "10s", window_sec: 1800 })) as Series2Response;
+        const resp = await getSeries2<Record<string, unknown>>(deviceId, { bucket: "10s", window_sec: 1800 });
         if (cancelled) return;
-        const parsed = parseSeries(resp?.data);
+        const parsed = parseSeries(resp.data);
         setPoints(parsed);
       } catch (error) {
         console.error("Erro ao carregar series", error);
@@ -105,9 +102,9 @@ export default function MapTrack({ deviceId }: { deviceId: string }) {
 
     const refresh = async () => {
       try {
-        const resp = (await getSeries2(deviceId, { bucket: "10s", window_sec: 1800 })) as Series2Response;
+        const resp = await getSeries2<Record<string, unknown>>(deviceId, { bucket: "10s", window_sec: 1800 });
         if (cancelled) return;
-        const parsed = parseSeries(resp?.data);
+        const parsed = parseSeries(resp.data);
         setPoints((prev) => {
           const merged = new Map<string, Pt>();
           [...prev, ...parsed].forEach((pt) => {
@@ -134,10 +131,16 @@ export default function MapTrack({ deviceId }: { deviceId: string }) {
   useEffect(() => {
     if (!isLive) {
       if (animRef.current) cancelAnimationFrame(animRef.current);
-      unsubscribeLastFrame();
+      if (wsCleanupRef.current) {
+        wsCleanupRef.current();
+        wsCleanupRef.current = null;
+      }
       return () => {
         if (animRef.current) cancelAnimationFrame(animRef.current);
-        unsubscribeLastFrame();
+        if (wsCleanupRef.current) {
+          wsCleanupRef.current();
+          wsCleanupRef.current = null;
+        }
       };
     }
 
@@ -182,10 +185,13 @@ export default function MapTrack({ deviceId }: { deviceId: string }) {
       };
     }
 
-    subscribeLastFrame(deviceId, handle);
+    wsCleanupRef.current = subscribeLastFrame(deviceId, handle);
     return () => {
       if (animRef.current) cancelAnimationFrame(animRef.current);
-      unsubscribeLastFrame();
+      if (wsCleanupRef.current) {
+        wsCleanupRef.current();
+        wsCleanupRef.current = null;
+      }
     };
   }, [deviceId, isLive]);
 

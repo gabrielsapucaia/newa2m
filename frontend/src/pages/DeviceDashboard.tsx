@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { Link, useParams } from "react-router-dom";
 import MapTrack from "../components/MapTrack";
+import { ImuHotPanel } from "../components/imu/ImuHotPanel";
 import { useUI } from "../store/ui";
 
 export default function DeviceDashboard() {
@@ -27,30 +28,18 @@ export default function DeviceDashboard() {
           Voltar
         </Link>
         <h2 className="text-lg font-semibold text-slate-100">Device: {id}</h2>
-        <div className="flex items-center gap-2 text-xs text-slate-400">
-          <span className="hidden md:inline">Modo:</span>
-          <button
-            type="button"
-            onClick={() => setLive(true)}
-            className={`rounded px-3 py-1 ${
-              liveMode ? "bg-sky-500 text-white" : "bg-slate-800 text-slate-300 hover:bg-slate-700"
-            }`}
-          >
-            Ao vivo
-          </button>
-          <button
-            type="button"
-            onClick={() => setLive(false)}
-            className={`rounded px-3 py-1 ${
-              !liveMode ? "bg-sky-500 text-white" : "bg-slate-800 text-slate-300 hover:bg-slate-700"
-            }`}
-          >
-            Historico
-          </button>
+        <div className="inline-flex items-center gap-2 text-xs text-slate-400">
+          Status:{" "}
+          <span className={`font-semibold ${liveMode ? "text-emerald-300" : "text-amber-300"}`}>
+            {liveMode ? "Ao vivo" : "Pausado"}
+          </span>
         </div>
       </div>
 
-      <MapTrack deviceId={id} />
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+        <MapTrack deviceId={id} />
+        <ImuHotPanel deviceId={id} />
+      </div>
     </div>
   );
 }

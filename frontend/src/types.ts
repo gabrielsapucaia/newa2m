@@ -36,11 +36,39 @@ export interface SeriesPoint {
   speed: number | null;
   cn0_avg?: number | null;
   sats_used?: number | null;
+  imu_rms_x?: number | null;
+  imu_rms_y?: number | null;
+  imu_rms_z?: number | null;
+  jerk_x?: number | null;
+  jerk_y?: number | null;
+  jerk_z?: number | null;
 }
 
 export interface SeriesPage {
   items: SeriesPoint[];
   nextCursor?: string | null;
 }
+
+export interface ImuSeriesPoint {
+  ts: string;
+  device_id: string;
+  imu_rms_x: number | null;
+  imu_rms_y: number | null;
+  imu_rms_z: number | null;
+  jerk_x: number | null;
+  jerk_y: number | null;
+  jerk_z: number | null;
+}
+
+export type ImuHotPoint = {
+  ts: string;
+  epochMs: number;
+  rmsX: number | null;
+  rmsY: number | null;
+  rmsZ: number | null;
+  jerkX: number | null;
+  jerkY: number | null;
+  jerkZ: number | null;
+};
 
 export type TelemetryMode = "live" | "history";

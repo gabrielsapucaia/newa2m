@@ -143,26 +143,38 @@ async def series2(
             cur.execute(
                 """
                 SELECT
-                    time_bucket(%s, ts) AS ts,
+                    time_bucket(%s, ts) AS bucket,
                     device_id,
                     avg(lat) AS lat,
                     avg(lon) AS lon,
                     avg(speed) AS speed,
                     avg(cn0_avg) AS cn0_avg,
-                    avg(sats_used) AS sats_used
+                    avg(sats_used) AS sats_used,
+                    avg(imu_rms_x) AS imu_rms_x,
+                    avg(imu_rms_y) AS imu_rms_y,
+                    avg(imu_rms_z) AS imu_rms_z,
+                    avg(jerk_x) AS jerk_x,
+                    avg(jerk_y) AS jerk_y,
+                    avg(jerk_z) AS jerk_z
                 FROM v_telemetry_enriched
                 WHERE device_id = %s
                   AND ts >= %s
                   AND ts < %s
-                GROUP BY ts, device_id
-                ORDER BY ts ASC
+                GROUP BY bucket, device_id
+                ORDER BY bucket ASC
                 LIMIT %s;
                 """,
                 (bucket, device_id, start_ts, end_ts, limit),
             )
             rows = cur.fetchall()
 
-    items = [_normalize(row) for row in rows]
+    items = []
+    for row in rows:
+        payload = dict(row)
+        bucket_ts = payload.pop("bucket")
+        payload["ts"] = bucket_ts
+        items.append(_normalize(payload))
+
     next_cursor = items[0]["ts"] if items else None
     return JSONResponse({"data": items, "cursor": next_cursor})
 

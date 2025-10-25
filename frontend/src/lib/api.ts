@@ -1,4 +1,10 @@
-import type { DeviceLastPoint, DeviceStatsRow, SeriesPage, StatsResponse } from "../types";
+import type {
+  DeviceLastPoint,
+  DeviceStatsRow,
+  ImuSeriesPoint,
+  SeriesPage,
+  StatsResponse,
+} from "../types";
 
 const DEFAULT_BASE_URL = "http://localhost:8080";
 const ENV_BASE_URL =
@@ -93,8 +99,16 @@ export async function getStatsWithFallback(): Promise<StatsResponse> {
   return { ...stats, devices: enriched };
 }
 
-export async function getSeries2(deviceId: string, params: Record<string, string | number>) {
-  return request(`/devices/${encodeURIComponent(deviceId)}/series2`, undefined, params);
+export interface Series2Response<T = Record<string, unknown>> {
+  data: T[];
+  cursor: string | null;
+}
+
+export async function getSeries2<T = Record<string, unknown>>(
+  deviceId: string,
+  params: Record<string, string | number>,
+): Promise<Series2Response<T>> {
+  return request<Series2Response<T>>(`/devices/${encodeURIComponent(deviceId)}/series2`, undefined, params);
 }
 
 export async function fetchStats(): Promise<StatsResponse> {
@@ -104,20 +118,26 @@ export async function fetchStats(): Promise<StatsResponse> {
 export interface SeriesQueryOptions {
   cursor?: string;
   limit?: number;
+  bucket?: string;
+  windowSec?: number;
 }
 
 export async function fetchDeviceSeries(deviceId: string, options: SeriesQueryOptions = {}): Promise<SeriesPage> {
   const limit = options.limit ?? 200;
+  const bucket = options.bucket ?? "10s";
   try {
-    const page = await request<SeriesPage>(`/devices/${deviceId}/series2`, undefined, {
-      cursor: options.cursor,
+    const params: Record<string, string | number> = {
       limit,
-    });
+      bucket,
+    };
+    if (options.cursor) params.cursor = options.cursor;
+    if (options.windowSec) params.window_sec = options.windowSec;
+    const page = await getSeries2(deviceId, params);
     return normalizeSeries(page);
   } catch (error) {
     const fallback = await request<Array<Record<string, unknown>>>(`/devices/${deviceId}/series`, undefined, {
       limit,
-      bucket: "1s",
+      bucket,
     });
     const items = fallback.map((row) => mapLegacySeriesRow(row));
     return {
@@ -160,18 +180,27 @@ function safeNumber(input: unknown): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
-function normalizeSeries(page: SeriesPage): SeriesPage {
+function normalizeSeries(page: Series2Response): SeriesPage {
   return {
-    items: page.items.map((item) => ({
-      ts: String(item.ts),
-      device_id: item.device_id,
-      lat: safeNumber(item.lat),
-      lon: safeNumber(item.lon),
-      speed: safeNumber(item.speed),
-      cn0_avg: safeNumber(item.cn0_avg),
-      sats_used: safeNumber(item.sats_used),
-    })),
-    nextCursor: page.nextCursor ?? null,
+    items: page.data.map((item) => {
+      const record = item as Record<string, unknown>;
+      return {
+        ts: String(record.ts),
+        device_id: String(record.device_id ?? "unknown"),
+        lat: safeNumber(record.lat),
+        lon: safeNumber(record.lon),
+        speed: safeNumber(record.speed),
+        cn0_avg: safeNumber(record.cn0_avg),
+        sats_used: safeNumber(record.sats_used),
+        imu_rms_x: safeNumber(record.imu_rms_x),
+        imu_rms_y: safeNumber(record.imu_rms_y),
+        imu_rms_z: safeNumber(record.imu_rms_z),
+        jerk_x: safeNumber(record.jerk_x),
+        jerk_y: safeNumber(record.jerk_y),
+        jerk_z: safeNumber(record.jerk_z),
+      };
+    }),
+    nextCursor: page.cursor ?? null,
   };
 }
 
@@ -184,7 +213,47 @@ function mapLegacySeriesRow(row: Record<string, unknown>) {
     speed: safeNumber(row.speed),
     cn0_avg: safeNumber(row.cn0_avg),
     sats_used: safeNumber(row.sats_used),
+    imu_rms_x: safeNumber(row.imu_rms_x),
+    imu_rms_y: safeNumber(row.imu_rms_y),
+    imu_rms_z: safeNumber(row.imu_rms_z),
+    jerk_x: safeNumber(row.jerk_x),
+    jerk_y: safeNumber(row.jerk_y),
+    jerk_z: safeNumber(row.jerk_z),
   };
+}
+
+export interface ImuSeriesQueryOptions {
+  windowSec?: number;
+  limit?: number;
+  bucket?: string;
+}
+
+function mapImuRow(row: Record<string, unknown>): ImuSeriesPoint {
+  return {
+    ts: String(row.ts ?? new Date().toISOString()),
+    device_id: String(row.device_id ?? "unknown"),
+    imu_rms_x: safeNumber(row.imu_rms_x),
+    imu_rms_y: safeNumber(row.imu_rms_y),
+    imu_rms_z: safeNumber(row.imu_rms_z),
+    jerk_x: safeNumber(row.jerk_x),
+    jerk_y: safeNumber(row.jerk_y),
+    jerk_z: safeNumber(row.jerk_z),
+  };
+}
+
+export async function fetchDeviceImuSeries(
+  deviceId: string,
+  options: ImuSeriesQueryOptions = {},
+): Promise<ImuSeriesPoint[]> {
+  const bucket = options.bucket ?? "1s";
+  const windowSec = options.windowSec ?? 600;
+  const limit = options.limit ?? 600;
+  const response = await getSeries2<Record<string, unknown>>(deviceId, {
+    bucket,
+    window_sec: windowSec,
+    limit,
+  });
+  return response.data.map(mapImuRow);
 }
 
 export function metersPerSecondToKmH(value: number | null | undefined): number {
