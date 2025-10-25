@@ -1,4 +1,4 @@
-﻿import { useMemo, useEffect, useRef } from "react";
+import { useMemo, useRef } from "react";
 import ReactECharts from "echarts-for-react";
 
 type LineSpec = { key: string; name?: string };
@@ -61,30 +61,38 @@ export default function EChartSeries({ data, lines, xDomain, height = 180, onRan
     [series, xDomain, showDataZoom],
   );
 
-  useEffect(() => {
-    const inst = chartRef.current?.getEchartsInstance();
-    if (!inst || !onRangeChange) return;
-    const handler = (evt: any) => {
-      const payload = Array.isArray(evt?.batch) && evt.batch.length ? evt.batch[0] : evt;
-      const start = Number(payload?.startValue ?? payload?.start);
-      const end = Number(payload?.endValue ?? payload?.end);
-      if (Number.isFinite(start) && Number.isFinite(end)) {
-        onRangeChange([start, end]);
-        return;
+  const onEvents = useMemo(() => {
+    if (!onRangeChange) return undefined;
+    const span = xDomain[1] - xDomain[0] || 1;
+    const resolveValue = (value: unknown, percentFallback: unknown) => {
+      const numeric = Number(value);
+      if (Number.isFinite(numeric)) return numeric;
+      const pct = Number(percentFallback);
+      if (Number.isFinite(pct)) {
+        return xDomain[0] + (span * pct) / 100;
       }
-      const opt = inst.getOption?.();
-      const axis = Array.isArray(opt?.xAxis) ? opt.xAxis[0] : undefined;
-      const min = Number(axis?.min);
-      const max = Number(axis?.max);
-      if (Number.isFinite(min) && Number.isFinite(max)) {
-        onRangeChange([min, max]);
-      }
+      return null;
     };
-    inst.on("dataZoom", handler);
-    return () => {
-      inst.off("dataZoom", handler);
+    return {
+      dataZoom: (evt: any) => {
+        const payload = Array.isArray(evt?.batch) && evt.batch.length ? evt.batch[0] : evt;
+        const start = resolveValue(payload?.startValue, payload?.start ?? payload?.startPercent);
+        const end = resolveValue(payload?.endValue, payload?.end ?? payload?.endPercent);
+        if (start !== null && end !== null) {
+          onRangeChange([start, end]);
+        }
+      },
     };
-  }, [onRangeChange]);
+  }, [onRangeChange, xDomain]);
 
-  return <ReactECharts ref={chartRef} theme="aura-dark" option={option} style={{ width: "100%", height }} notMerge />;
+  return (
+    <ReactECharts
+      ref={chartRef}
+      theme="aura-dark"
+      option={option}
+      onEvents={onEvents}
+      style={{ width: "100%", height }}
+      notMerge
+    />
+  );
 }
