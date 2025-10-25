@@ -69,8 +69,13 @@ export default function EChartSeries({ data, lines, xDomain, height = 180, onRan
       series,
       dataZoom: showDataZoom
         ? [
-            { type: "inside", throttle: 50, zoomOnMouseWheel: "shift" },
-            { type: "slider", height: 22, bottom: 4 },
+            {
+              type: "inside",
+              throttle: 50,
+              zoomOnMouseWheel: "shift",
+              moveOnMouseMove: true,
+              moveOnMouseWheel: true,
+            },
           ]
         : undefined,
     }),

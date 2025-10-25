@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import EChartSeries from "./EChartSeries";
 import { useTelemetry, type LivePoint, EMPTY_POINTS } from "../store/telemetry";
 import { subscribeLastFrame, unsubscribeLastFrame } from "../lib/ws";
@@ -10,7 +10,6 @@ type LivePointT = LivePoint;
 
 const WINDOW_MS = 10 * MINUTE_MS;
 const FLUSH_MS = 1_000;
-const TICK_MS = 100;
 const BACKFILL_CHUNK_MS = 10 * MINUTE_MS;
 const BACKFILL_THRESHOLD_MS = 30_000;
 
@@ -190,15 +189,9 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
   const storedDomain = series?.xDomain ?? null;
   const oldestLoaded = series?.oldest ?? (points.length ? points[0].t : Date.now());
 
-  const [nowMs, setNowMs] = useState(() => Date.now());
+  const initialDomainRef = useRef<[number, number]>([Date.now() - WINDOW_MS, Date.now()]);
 
-  useEffect(() => {
-    const id = window.setInterval(() => setNowMs(Date.now()), TICK_MS);
-    return () => window.clearInterval(id);
-  }, []);
-
-  const liveDomain: [number, number] = [nowMs - WINDOW_MS, nowMs];
-  const baseDomain = storedDomain ?? liveDomain;
+  const baseDomain = storedDomain ?? initialDomainRef.current;
   const safeDomain = clampDomain(baseDomain);
   const activeDomain = safeDomain;
 
@@ -211,9 +204,15 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
     }
   }, [points]);
 
+  const getLiveDomain = useCallback((): [number, number] => {
+    const now = Date.now();
+    return [now - WINDOW_MS, now];
+  }, []);
+
   const pushDomain = useCallback(
     (domain: [number, number]) => {
       programmaticZoomRef.current = true;
+      initialDomainRef.current = domain;
       setXDomain(deviceId, domain);
     },
     [deviceId, setXDomain],
@@ -235,7 +234,8 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
         if (carried.series.length) {
           const oldest = Math.min(...carried.series.map((p) => p.t));
           setOldest(deviceId, oldest);
-          pushDomain(liveDomain);
+          const domain = getLiveDomain();
+          pushDomain(domain);
           lastKnownRef.current = carried.last;
         }
       };
@@ -249,7 +249,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           console.error("[LiveIMUPanel] backfill inicial falhou", error);
           if (mounted) {
             reset(deviceId, []);
-            pushDomain(liveDomain);
+            pushDomain(getLiveDomain());
           }
         }
       }
@@ -260,7 +260,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
     return () => {
       mounted = false;
     };
-  }, [deviceId, liveDomain, pushDomain, reset, setOldest]);
+  }, [deviceId, getLiveDomain, pushDomain, reset, setOldest]);
 
   useEffect(() => {
     const handleMessage = (payload: RawSample) => {
@@ -345,8 +345,8 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
   );
 
   const recenterNow = useCallback(() => {
-    pushDomain([Date.now() - WINDOW_MS, Date.now()]);
-  }, [pushDomain]);
+    pushDomain(getLiveDomain());
+  }, [getLiveDomain, pushDomain]);
 
   return (
     <div className="space-y-4">
