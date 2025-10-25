@@ -190,7 +190,6 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
   const storedDomain = series?.xDomain ?? null;
   const oldestLoaded = series?.oldest ?? (points.length ? points[0].t : Date.now());
 
-  const [isLive, setIsLive] = useState(true);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   useEffect(() => {
@@ -201,11 +200,16 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
   const liveDomain: [number, number] = [nowMs - WINDOW_MS, nowMs];
   const baseDomain = storedDomain ?? liveDomain;
   const safeDomain = clampDomain(baseDomain);
-  const activeDomain = isLive ? liveDomain : safeDomain;
+  const activeDomain = safeDomain;
 
   const programmaticZoomRef = useRef(false);
-  const lastLiveDomainRef = useRef<[number, number] | null>(null);
   const lastKnownRef = useRef<LivePointT | null>(points.length ? points[points.length - 1] : null);
+
+  useEffect(() => {
+    if (points.length) {
+      lastKnownRef.current = points[points.length - 1];
+    }
+  }, [points]);
 
   const pushDomain = useCallback(
     (domain: [number, number]) => {
@@ -214,16 +218,6 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
     },
     [deviceId, setXDomain],
   );
-
-  useEffect(() => {
-    if (!isLive) return;
-    const next: [number, number] = [liveDomain[0], liveDomain[1]];
-    const previous = lastLiveDomainRef.current;
-    if (!previous || Math.abs(next[0] - previous[0]) > 500 || Math.abs(next[1] - previous[1]) > 500) {
-      lastLiveDomainRef.current = next;
-      pushDomain(next);
-    }
-  }, [isLive, liveDomain, pushDomain]);
 
   const stagingRef = useRef<LivePointT[]>([]);
 
@@ -269,12 +263,6 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
   }, [deviceId, liveDomain, pushDomain, reset, setOldest]);
 
   useEffect(() => {
-    if (!isLive) {
-      unsubscribeLastFrame();
-      stagingRef.current = [];
-      return;
-    }
-
     const handleMessage = (payload: RawSample) => {
       const prev = stagingRef.current[stagingRef.current.length - 1] ?? lastKnownRef.current ?? undefined;
       const point = withCarry(toPoint(payload), prev);
@@ -287,7 +275,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
     return () => {
       stop();
     };
-  }, [deviceId, isLive]);
+  }, [deviceId]);
 
   useEffect(() => {
     const flush = () => {
@@ -351,35 +339,23 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           return;
         }
         const next = clampDomain(range);
-        setIsLive(false);
         setXDomain(deviceId, next);
       }, 150),
     [deviceId, setXDomain],
   );
 
-  const goLive = useCallback(() => {
-    setIsLive(true);
-    pushDomain(liveDomain);
-  }, [liveDomain, pushDomain]);
-
-  const pauseLive = useCallback(() => {
-    setIsLive(false);
-  }, []);
+  const recenterNow = useCallback(() => {
+    pushDomain([Date.now() - WINDOW_MS, Date.now()]);
+  }, [pushDomain]);
 
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
         <button
-          onClick={goLive}
-          className={`px-2 py-1 rounded-2xl border border-slate-700 ${isLive ? "bg-sky-600 text-white" : "bg-slate-900 text-slate-100 hover:bg-slate-800"}`}
+          onClick={recenterNow}
+          className="px-2 py-1 rounded-2xl border border-slate-700 bg-slate-900 text-slate-100 hover:bg-slate-800"
         >
-          Ao vivo
-        </button>
-        <button
-          onClick={pauseLive}
-          className={`px-2 py-1 rounded-2xl border border-slate-700 ${!isLive ? "bg-sky-600 text-white" : "bg-slate-900 text-slate-100 hover:bg-slate-800"}`}
-        >
-          Pausar
+          Recentrar (agora)
         </button>
         <span className="text-xs text-slate-400">
           Janela {new Date(activeDomain[0]).toLocaleTimeString("pt-BR", { hour12: false })} →{" "}
