@@ -41,6 +41,14 @@ const FIELD_PATHS = {
   ],
 } as const;
 
+const CARRY_FIELDS: (keyof LivePointT)[] = [
+  "imu_gyro_rms_x",
+  "imu_gyro_rms_y",
+  "imu_gyro_rms_z",
+  "shock_level",
+  "baro",
+];
+
 function safeNumber(value: unknown): number | null {
   if (value === null || value === undefined) return null;
   const n = Number(value);
@@ -131,6 +139,34 @@ function toPoint(raw: RawSample): LivePointT {
   };
 }
 
+function withCarry(point: LivePointT, previous?: LivePointT | null): LivePointT {
+  if (!previous) return point;
+  let mutated = false;
+  const next: LivePointT = { ...point };
+  for (const field of CARRY_FIELDS) {
+    const key = field as keyof LivePointT;
+    const currentValue = next[key];
+    const prevValue = previous[key];
+    if ((currentValue ?? null) === null && (prevValue ?? null) !== null) {
+      (next as Record<string, unknown>)[key as string] = prevValue;
+      mutated = true;
+    }
+  }
+  return mutated ? next : point;
+}
+
+function carrySeries(points: LivePointT[], seed?: LivePointT | null): { series: LivePointT[]; last: LivePointT | null } {
+  if (!points.length) return { series: [], last: seed ?? null };
+  const out: LivePointT[] = [];
+  let prev = seed ?? null;
+  for (const p of points) {
+    const filled = withCarry(p, prev);
+    out.push(filled);
+    prev = filled;
+  }
+  return { series: out, last: prev };
+}
+
 function clampDomain([start, end]: [number, number]): [number, number] {
   if (!Number.isFinite(start) || !Number.isFinite(end)) {
     const now = Date.now();
@@ -169,6 +205,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
 
   const programmaticZoomRef = useRef(false);
   const lastLiveDomainRef = useRef<[number, number] | null>(null);
+  const lastKnownRef = useRef<LivePointT | null>(points.length ? points[points.length - 1] : null);
 
   const pushDomain = useCallback(
     (domain: [number, number]) => {
@@ -199,11 +236,13 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
         if (!mounted) return;
         const rows = Array.isArray(seed?.data) ? (seed.data as RawSample[]) : [];
         const mapped = rows.map(toPoint);
-        reset(deviceId, mapped);
-        if (mapped.length) {
-          const oldest = Math.min(...mapped.map((p) => p.t));
+        const carried = carrySeries(mapped);
+        reset(deviceId, carried.series);
+        if (carried.series.length) {
+          const oldest = Math.min(...carried.series.map((p) => p.t));
           setOldest(deviceId, oldest);
           pushDomain(liveDomain);
+          lastKnownRef.current = carried.last;
         }
       };
 
@@ -237,7 +276,10 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
     }
 
     const handleMessage = (payload: RawSample) => {
-      stagingRef.current.push(toPoint(payload));
+      const prev = stagingRef.current[stagingRef.current.length - 1] ?? lastKnownRef.current ?? undefined;
+      const point = withCarry(toPoint(payload), prev);
+      stagingRef.current.push(point);
+      lastKnownRef.current = point;
     };
 
     const stop = subscribeLastFrame(deviceId, handleMessage);
@@ -252,6 +294,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
       if (!stagingRef.current.length) return;
       const batch = stagingRef.current.splice(0, stagingRef.current.length);
       appendMany(deviceId, batch);
+      lastKnownRef.current = batch[batch.length - 1] ?? lastKnownRef.current;
     };
 
     const id = window.setInterval(flush, FLUSH_MS) as unknown as number;
@@ -282,9 +325,9 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           });
           const rows = Array.isArray(seed?.data) ? (seed.data as RawSample[]) : [];
           if (!rows.length) return;
-          const mapped = rows.map(toPoint);
-          prependMany(deviceId, mapped);
-          const newestOld = Math.min(...mapped.map((p) => p.t));
+          const carried = carrySeries(rows.map(toPoint)).series;
+          prependMany(deviceId, carried);
+          const newestOld = Math.min(...carried.map((p) => p.t));
           setOldest(deviceId, newestOld);
         } catch (error) {
           console.error("[LiveIMUPanel] backfill incremental falhou", error);
