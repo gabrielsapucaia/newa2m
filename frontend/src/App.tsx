@@ -1,1 +1,3 @@
-export default function App() { return null; }\n
+export default function App() {
+  return null;
+}
