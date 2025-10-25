@@ -2,8 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { MapContainer, Marker, Polyline, TileLayer, useMap } from "react-leaflet";
 import type { LatLngTuple, Marker as LeafletMarker } from "leaflet";
 import L from "leaflet";
-import { getSeries2 } from "../lib/api";
+import { getSeries2, metersPerSecondToKmH } from "../lib/api";
 import { subscribeLastFrame, unsubscribeLastFrame } from "../lib/ws";
+import SpeedLegend from "./SpeedLegend";
 
 import "leaflet/dist/leaflet.css";
 
@@ -56,7 +57,7 @@ function parseSeries(series?: Array<Record<string, unknown>>): Pt[] {
     .filter((item) => Number.isFinite(item.lat) && Number.isFinite(item.lon));
 }
 
-export default function MapTrack({ deviceId }: { deviceId: string }) {
+export default function MapTrack({ deviceId, liveMode = true }: { deviceId: string; liveMode?: boolean }) {
   const [points, setPoints] = useState<Pt[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [livePoint, setLivePoint] = useState<Pt | null>(null);
@@ -138,12 +139,18 @@ export default function MapTrack({ deviceId }: { deviceId: string }) {
       }
     }
 
+    if (!liveMode) {
+      return () => {
+        if (animRef.current) cancelAnimationFrame(animRef.current);
+      };
+    }
+
     subscribeLastFrame(deviceId, handle);
     return () => {
       if (animRef.current) cancelAnimationFrame(animRef.current);
       unsubscribeLastFrame();
     };
-  }, [deviceId]);
+  }, [deviceId, liveMode]);
 
   const polylinePoints: LatLngTuple[] = useMemo(
     () => points.map((pt) => [pt.lat, pt.lon] as LatLngTuple),
@@ -167,45 +174,95 @@ export default function MapTrack({ deviceId }: { deviceId: string }) {
   }, [points]);
 
   const latestPoint: LatLngTuple = useMemo(() => {
-    if (livePoint) return [livePoint.lat, livePoint.lon];
+    if (liveMode && livePoint) return [livePoint.lat, livePoint.lon];
     if (polylinePoints.length > 0) return polylinePoints[polylinePoints.length - 1];
     return DEFAULT_CENTER;
-  }, [livePoint, polylinePoints]);
+  }, [liveMode, livePoint, polylinePoints]);
+
+  const recentPoints = useMemo(() => [...points].slice(-100).reverse(), [points]);
 
   return (
-    <div className="relative h-[70vh] w-full overflow-hidden rounded border border-slate-800">
-      <MapContainer center={latestPoint} zoom={13} scrollWheelZoom className="h-full w-full">
-        <TileLayer
-          attribution='&copy; OpenStreetMap'
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-        />
-        {polylinePoints.length > 0 && <FitBounds points={polylinePoints} />}
-        {segments.map((segment, index) => (
-          <Polyline
-            key={`${segment.positions[0][0]}-${segment.positions[0][1]}-${index}`}
-            positions={segment.positions}
-            pathOptions={{ color: segment.color, weight: 3 }}
+    <div className="space-y-3">
+      <div className="relative h-[70vh] w-full overflow-hidden rounded border border-slate-800 bg-slate-900/80">
+        <MapContainer center={latestPoint} zoom={13} scrollWheelZoom className="h-full w-full">
+          <TileLayer
+            attribution='&copy; OpenStreetMap'
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
-        ))}
-        <Marker
-          position={latestPoint}
-          icon={markerIcon}
-          ref={(instance) => {
-            markerRef.current = instance ?? null;
-          }}
-        />
-      </MapContainer>
+          {polylinePoints.length > 0 && <FitBounds points={polylinePoints} />}
+          {segments.map((segment, index) => (
+            <Polyline
+              key={`${segment.positions[0][0]}-${segment.positions[0][1]}-${index}`}
+              positions={segment.positions}
+              pathOptions={{ color: segment.color, weight: 3 }}
+            />
+          ))}
+          <Marker
+            position={latestPoint}
+            icon={markerIcon}
+            ref={(instance) => {
+              markerRef.current = instance ?? null;
+            }}
+          />
+        </MapContainer>
 
-      <div className="absolute top-2 left-2 flex items-center gap-2 rounded bg-slate-900/80 px-3 py-1 text-xs text-slate-200 shadow">
-        <button
-          type="button"
-          onClick={loadMore}
-          disabled={loadingRef.current || !cursor}
-          className="rounded border border-slate-700 px-2 py-1 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          Carregar mais
-        </button>
-        {livePoint?.speed != null && <span>Speed: {Number(livePoint.speed).toFixed(1)} km/h</span>}
+        <div className="absolute top-2 left-2 flex items-center gap-2 rounded bg-slate-900/80 px-3 py-1 text-xs text-slate-200 shadow">
+          <button
+            type="button"
+            onClick={loadMore}
+            disabled={loadingRef.current || !cursor}
+            className="rounded border border-slate-700 px-2 py-1 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Carregar mais
+          </button>
+          {liveMode && livePoint?.speed != null && (
+            <span>Speed: {metersPerSecondToKmH(livePoint.speed ?? 0).toFixed(1)} km/h</span>
+          )}
+        </div>
+
+        {!liveMode && (
+          <div className="absolute top-2 right-2 rounded bg-amber-500/80 px-3 py-1 text-xs font-semibold text-slate-900 shadow">
+            Ao vivo pausado
+          </div>
+        )}
+
+        <SpeedLegend className="absolute bottom-3 right-3" />
+      </div>
+
+      <div className="h-48 overflow-y-auto rounded border border-slate-800 bg-slate-900/80 px-3 py-2 text-xs text-slate-300">
+        <div className="mb-2 flex items-center justify-between text-slate-400">
+          <span>Historico recente (max 100 pontos)</span>
+          <span>Total armazenado: {points.length}</span>
+        </div>
+        {recentPoints.length === 0 ? (
+          <p className="text-slate-500">Nenhum ponto carregado ainda.</p>
+        ) : (
+          <ul className="space-y-1">
+            {recentPoints.map((point) => {
+              const kmh = metersPerSecondToKmH(point.speed ?? 0);
+              return (
+                <li
+                  key={point.ts}
+                  className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-1 last:border-b-0"
+                >
+                  <span className="font-mono text-slate-400">{new Date(point.ts).toLocaleString()}</span>
+                  <span className="flex items-center gap-3">
+                    <span className="flex items-center gap-1">
+                      <span
+                        className="inline-block h-2 w-2 rounded-full"
+                        style={{ background: speedColor(point.speed ?? null) }}
+                      />
+                      <span>{kmh.toFixed(1)} km/h</span>
+                    </span>
+                    <span className="font-mono text-slate-500">
+                      {point.lat.toFixed(5)}, {point.lon.toFixed(5)}
+                    </span>
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </div>
     </div>
   );
