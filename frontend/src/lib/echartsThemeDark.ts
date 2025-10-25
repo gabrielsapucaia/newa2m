@@ -1,4 +1,4 @@
-﻿const theme = {
+const theme = {
   dark: true,
   color: ["#60a5fa", "#34d399", "#fbbf24", "#ef4444", "#a78bfa", "#22d3ee"],
   backgroundColor: "transparent",
@@ -8,7 +8,8 @@
   tooltip: {
     backgroundColor: "#111827",
     borderColor: "#374151",
-    textStyle: { color: "#e5e7eb" },
-  },
+    textStyle: { color: "#e5e7eb" }
+  }
 };
+
 export default theme;
