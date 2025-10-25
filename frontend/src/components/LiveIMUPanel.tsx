@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import EChartSeries from "./EChartSeries";
 import { useTelemetry, type LivePoint, EMPTY_POINTS } from "../store/telemetry";
 import { subscribeLastFrame, unsubscribeLastFrame } from "../lib/ws";
@@ -189,9 +189,17 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
   const storedDomain = series?.xDomain ?? null;
   const oldestLoaded = series?.oldest ?? (points.length ? points[0].t : Date.now());
 
-  const initialDomainRef = useRef<[number, number]>([Date.now() - WINDOW_MS, Date.now()]);
+  const [isAuto, setIsAuto] = useState(true);
+  const [autoNow, setAutoNow] = useState(() => Date.now());
 
-  const baseDomain = storedDomain ?? initialDomainRef.current;
+  useEffect(() => {
+    if (!isAuto) return;
+    const id = window.setInterval(() => setAutoNow(Date.now()), 100);
+    return () => window.clearInterval(id);
+  }, [isAuto]);
+
+  const liveDomain: [number, number] = [autoNow - WINDOW_MS, autoNow];
+  const baseDomain = isAuto ? liveDomain : storedDomain ?? liveDomain;
   const safeDomain = clampDomain(baseDomain);
   const activeDomain = safeDomain;
 
@@ -204,19 +212,17 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
     }
   }, [points]);
 
-  const getLiveDomain = useCallback((): [number, number] => {
+  const resumeAuto = useCallback(() => {
     const now = Date.now();
-    return [now - WINDOW_MS, now];
-  }, []);
+    setIsAuto(true);
+    setAutoNow(now);
+    programmaticZoomRef.current = true;
+    setXDomain(deviceId, [now - WINDOW_MS, now]);
+  }, [deviceId, setXDomain]);
 
-  const pushDomain = useCallback(
-    (domain: [number, number]) => {
-      programmaticZoomRef.current = true;
-      initialDomainRef.current = domain;
-      setXDomain(deviceId, domain);
-    },
-    [deviceId, setXDomain],
-  );
+  const pauseAuto = useCallback(() => {
+    setIsAuto(false);
+  }, []);
 
   const stagingRef = useRef<LivePointT[]>([]);
 
@@ -234,9 +240,13 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
         if (carried.series.length) {
           const oldest = Math.min(...carried.series.map((p) => p.t));
           setOldest(deviceId, oldest);
-          const domain = getLiveDomain();
-          pushDomain(domain);
           lastKnownRef.current = carried.last;
+          if (isAuto) {
+            const now = Date.now();
+            setAutoNow(now);
+            programmaticZoomRef.current = true;
+            setXDomain(deviceId, [now - WINDOW_MS, now]);
+          }
         }
       };
 
@@ -249,7 +259,12 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           console.error("[LiveIMUPanel] backfill inicial falhou", error);
           if (mounted) {
             reset(deviceId, []);
-            pushDomain(getLiveDomain());
+            if (isAuto) {
+              const now = Date.now();
+              setAutoNow(now);
+              programmaticZoomRef.current = true;
+              setXDomain(deviceId, [now - WINDOW_MS, now]);
+            }
           }
         }
       }
@@ -260,7 +275,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
     return () => {
       mounted = false;
     };
-  }, [deviceId, getLiveDomain, pushDomain, reset, setOldest]);
+  }, [deviceId, isAuto, reset, setOldest, setXDomain, setAutoNow]);
 
   useEffect(() => {
     const handleMessage = (payload: RawSample) => {
@@ -339,14 +354,15 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           return;
         }
         const next = clampDomain(range);
+        pauseAuto();
         setXDomain(deviceId, next);
       }, 150),
-    [deviceId, setXDomain],
+    [deviceId, pauseAuto, setXDomain],
   );
 
   const recenterNow = useCallback(() => {
-    pushDomain(getLiveDomain());
-  }, [getLiveDomain, pushDomain]);
+    resumeAuto();
+  }, [resumeAuto]);
 
   return (
     <div className="space-y-4">
@@ -355,10 +371,10 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           onClick={recenterNow}
           className="px-2 py-1 rounded-2xl border border-slate-700 bg-slate-900 text-slate-100 hover:bg-slate-800"
         >
-          Recentrar (agora)
+          {isAuto ? "Ao vivo" : "Voltar ao vivo"}
         </button>
         <span className="text-xs text-slate-400">
-          Janela {new Date(activeDomain[0]).toLocaleTimeString("pt-BR", { hour12: false })} →{" "}
+          Janela {new Date(activeDomain[0]).toLocaleTimeString("pt-BR", { hour12: false })} -{" "}
           {new Date(activeDomain[1]).toLocaleTimeString("pt-BR", { hour12: false })}
         </span>
       </div>
@@ -406,7 +422,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
       </div>
 
       <div className="rounded-2xl border border-slate-800 bg-slate-900 p-3 shadow-lg">
-        <div className="mb-1 text-sm font-semibold text-slate-200">GNSS / Operação</div>
+        <div className="mb-1 text-sm font-semibold text-slate-200">GNSS / Operacao</div>
         <EChartSeries
           data={points}
           lines={[
@@ -422,7 +438,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
       </div>
 
       <div className="rounded-2xl border border-slate-800 bg-slate-900 p-3 shadow-lg">
-        <div className="mb-1 text-sm font-semibold text-slate-200">Barômetro / Choque</div>
+        <div className="mb-1 text-sm font-semibold text-slate-200">Barometro / Choque</div>
         <EChartSeries
           data={points}
           lines={[

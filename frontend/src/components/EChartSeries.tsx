@@ -45,7 +45,7 @@ export default function EChartSeries({ data, lines, xDomain, height = 180, onRan
     () => ({
       darkMode: true,
       animation: false,
-      grid: { left: 40, right: 10, top: 20, bottom: showDataZoom ? 60 : 30 },
+      grid: { left: 40, right: 10, top: 20, bottom: showDataZoom ? 70 : 30 },
       xAxis: {
         type: "time",
         min: xDomain[0],
@@ -75,6 +75,14 @@ export default function EChartSeries({ data, lines, xDomain, height = 180, onRan
               zoomOnMouseWheel: "shift",
               moveOnMouseMove: true,
               moveOnMouseWheel: true,
+            },
+            {
+              type: "slider",
+              height: 16,
+              bottom: 6,
+              borderColor: "#1f2937",
+              handleStyle: { color: "#10b981" },
+              labelFormatter: () => "",
             },
           ]
         : undefined,
@@ -113,6 +121,7 @@ export default function EChartSeries({ data, lines, xDomain, height = 180, onRan
       option={option}
       onEvents={onEvents}
       style={{ width: "100%", height }}
+      opts={{ renderer: "canvas" }}
       notMerge={false}
       lazyUpdate
     />
