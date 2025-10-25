@@ -10,6 +10,8 @@ import paho.mqtt.client as mqtt
 import psycopg
 import psycopg.rows
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+
+from .routes_raw import router as raw_router
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -21,6 +23,7 @@ MQTT_PASSWORD = os.getenv("MQTT_PASSWORD")
 SERVER_IP = os.getenv("SERVER_IP", "localhost")
 
 app = FastAPI(title="Aura API")
+app.include_router(raw_router)
 
 cors_origins_env = os.getenv("CORS_ORIGINS")
 if cors_origins_env:
@@ -242,3 +245,6 @@ async def ws_last(ws: WebSocket) -> None:
         client.loop_stop()
         with contextlib.suppress(Exception):
             client.disconnect()
+
+
+
