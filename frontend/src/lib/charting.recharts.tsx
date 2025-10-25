@@ -1,25 +1,37 @@
 import { ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, Legend } from "recharts";
 import type { ChartProps } from "./charting";
 
-const fmtX = (ts: any) => {
-  try {
-    return new Date(ts).toLocaleTimeString("pt-BR", { hour12: false });
-  } catch (error) {
-    return String(ts);
-  }
+const fmtX = (v: any) => {
+  const n = typeof v === "number" ? v : Number(v);
+  if (!Number.isFinite(n)) return String(v);
+  return new Date(n).toLocaleTimeString("pt-BR", { hour12: false });
 };
 
-export function XYLinesChart({ data, lines, height = 160, xKey = "ts", yDomain, legend = true }: ChartProps) {
+export function XYLinesChart({ data, lines, height = 160, xKey = "t", yDomain, legend = true }: ChartProps) {
   return (
     <ResponsiveContainer width="100%" height={height}>
       <LineChart data={data}>
         <CartesianGrid strokeDasharray="3 3" />
-        <XAxis dataKey={xKey} tickFormatter={fmtX} minTickGap={20} />
+        <XAxis
+          dataKey={xKey}
+          type="number"
+          tickFormatter={fmtX}
+          domain={["auto", "auto"]}
+          allowDataOverflow
+          minTickGap={20}
+        />
         <YAxis domain={yDomain as any} />
-        <Tooltip />
+        <Tooltip labelFormatter={(v) => fmtX(v as any)} />
         {legend && <Legend />}
-        {lines.map((line) => (
-          <Line key={line.key} type="monotone" dot={false} dataKey={line.key} name={line.name ?? line.key} />
+        {lines.map((l) => (
+          <Line
+            key={l.key}
+            type="monotone"
+            dot={false}
+            isAnimationActive={false}
+            dataKey={l.key}
+            name={l.name ?? l.key}
+          />
         ))}
       </LineChart>
     </ResponsiveContainer>
