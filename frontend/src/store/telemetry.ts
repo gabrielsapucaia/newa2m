@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 export type LivePoint = {
   ts: string; // ISO
+  t: number; // epoch millis
   speed?: number | null;
   cn0_avg?: number | null;
   sats_used?: number | null;
@@ -20,8 +21,43 @@ export type LivePoint = {
 
 type Series = { deviceId: string; points: LivePoint[] };
 
-const MAX_POINTS = 600; // ~10 min a 1 Hz
+const BUFFER_MS = 60 * 60 * 1000; // 60 minutos
+const MAX_POINTS = Math.ceil(BUFFER_MS / 1000) + 600; // margem para lotes irregulares
 const EMPTY_POINTS: LivePoint[] = [];
+
+function normalise(points: LivePoint[]): LivePoint[] {
+  if (points.length === 0) return EMPTY_POINTS;
+  const sorted = [...points]
+    .map((p) => {
+      if (typeof p.t === "number" && Number.isFinite(p.t)) return p;
+      const parsed = Date.parse(p.ts);
+      const t = Number.isFinite(parsed) ? parsed : Date.now();
+      return { ...p, t };
+    })
+    .sort((a, b) => a.t - b.t);
+
+  const dedup: LivePoint[] = [];
+  let lastT: number | undefined;
+  for (const sample of sorted) {
+    if (!Number.isFinite(sample.t)) continue;
+    if (lastT === sample.t) {
+      dedup[dedup.length - 1] = sample;
+    } else {
+      dedup.push(sample);
+      lastT = sample.t;
+    }
+  }
+
+  if (dedup.length === 0) return EMPTY_POINTS;
+
+  const latest = dedup[dedup.length - 1].t;
+  const cutoff = latest - BUFFER_MS;
+  const clipped = dedup.filter((sample) => sample.t >= cutoff);
+  if (clipped.length > MAX_POINTS) {
+    return clipped.slice(-MAX_POINTS);
+  }
+  return clipped;
+}
 
 type TelemetryState = {
   byDevice: Record<string, Series>;
@@ -34,13 +70,12 @@ export const useTelemetry = create<TelemetryState>((set, get) => ({
   byDevice: {},
   appendMany: (deviceId, incoming) => {
     if (incoming.length === 0) return;
-    const cur = get().byDevice[deviceId]?.points ?? EMPTY_POINTS;
-    const merged = [...cur, ...incoming];
-    const clipped = merged.slice(-MAX_POINTS);
-    set((s) => ({ byDevice: { ...s.byDevice, [deviceId]: { deviceId, points: clipped } } }));
+    const current = get().byDevice[deviceId]?.points ?? EMPTY_POINTS;
+    const merged = normalise([...current, ...incoming]);
+    set((s) => ({ byDevice: { ...s.byDevice, [deviceId]: { deviceId, points: merged } } }));
   },
   reset: (deviceId, initial) => {
-    const clipped = [...initial].slice(-MAX_POINTS);
+    const clipped = normalise(initial);
     set((s) => ({ byDevice: { ...s.byDevice, [deviceId]: { deviceId, points: clipped } } }));
   },
   clear: (deviceId) =>
