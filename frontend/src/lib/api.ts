@@ -1,10 +1,14 @@
 import type { DeviceLastPoint, SeriesPage, StatsResponse } from "../types";
 
 const DEFAULT_BASE_URL = "http://localhost:8080";
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? DEFAULT_BASE_URL;
+const ENV_BASE_URL =
+  (import.meta.env.VITE_API_BASE as string | undefined) ??
+  (import.meta.env.VITE_API_BASE_URL as string | undefined);
+export const API = ENV_BASE_URL ?? DEFAULT_BASE_URL;
+const API_BASE_URL = API;
 
 function buildUrl(path: string, searchParams?: Record<string, string | number | undefined>) {
-  const url = new URL(path, API_BASE_URL);
+  const url = path.startsWith("http") ? new URL(path) : new URL(path, API_BASE_URL);
   if (searchParams) {
     Object.entries(searchParams).forEach(([key, value]) => {
       if (value !== undefined && value !== null && value !== "") {
@@ -36,6 +40,18 @@ async function request<T>(
   }
 
   return (await res.json()) as T;
+}
+
+export async function listDevices() {
+  return request(`${API_BASE_URL}/devices`);
+}
+
+export async function getStats() {
+  return request(`${API_BASE_URL}/stats`);
+}
+
+export async function getSeries2(deviceId: string, params: Record<string, string | number>) {
+  return request(`/devices/${encodeURIComponent(deviceId)}/series2`, undefined, params);
 }
 
 export async function fetchStats(): Promise<StatsResponse> {
@@ -140,5 +156,3 @@ export function getSpeedColor(speedMs: number | null | undefined): string {
   if (speed < 45) return "#eab308";
   return "#ef4444";
 }
-
-export { API_BASE_URL };

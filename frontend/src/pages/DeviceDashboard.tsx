@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import type { InfiniteData } from "@tanstack/react-query";
+import type { InfiniteData, QueryFunctionContext } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
 import DeviceTrackMap from "../components/DeviceTrackMap";
 import { useLiveDevice } from "../hooks/useLiveDevice";
@@ -28,8 +28,9 @@ const DeviceDashboard = () => {
 
   const seriesQuery = useInfiniteQuery<SeriesPage, Error, SeriesPage, [string, string | undefined], string | undefined>({
     queryKey: ["device-series", deviceId],
-    queryFn: ({ pageParam }) => fetchDeviceSeries(deviceId!, { cursor: pageParam }),
-    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }: QueryFunctionContext<[string, string | undefined], string | undefined>) =>
+      fetchDeviceSeries(deviceId!, { cursor: pageParam }),
+    initialPageParam: undefined,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: mode === "history" && !!deviceId,
   });

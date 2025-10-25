@@ -1,7 +1,7 @@
 import type { DeviceLastPoint } from "../types";
-import { API_BASE_URL, normalizePoint } from "./api";
+import { API, normalizePoint } from "./api";
 
-const WS_BASE_URL = API_BASE_URL.replace(/^http/i, (match) => (match.toLowerCase() === "https" ? "wss" : "ws"));
+const WS_BASE_URL = API.replace(/^http/i, (match: string) => (match.toLowerCase() === "https" ? "wss" : "ws"));
 const WS_URL = `${WS_BASE_URL}/live`;
 
 type Listener = (payload: DeviceLastPoint) => void;
