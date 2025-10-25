@@ -5,7 +5,7 @@ import DevicesMap from "../components/DevicesMap";
 import { fetchDeviceLast, fetchStats } from "../lib/api";
 import type { DeviceLastPoint, DeviceStatsRow } from "../types";
 
-const HomePage = () => {
+const Home = () => {
   const statsQuery = useQuery({
     queryKey: ["stats"],
     queryFn: fetchStats,
@@ -73,4 +73,4 @@ const HomePage = () => {
   );
 };
 
-export default HomePage;
+export default Home;

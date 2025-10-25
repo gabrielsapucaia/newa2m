@@ -8,7 +8,8 @@ import { fetchDeviceLast, fetchDeviceSeries, metersPerSecondToKmH } from "../lib
 import type { DeviceLastPoint, SeriesPage, SeriesPoint, TelemetryMode } from "../types";
 
 const DeviceDashboard = () => {
-  const { deviceId } = useParams<{ deviceId: string }>();
+  const { id } = useParams<{ id: string }>();
+  const deviceId = id ?? null;
   const [mode, setMode] = useState<TelemetryMode>("live");
 
   const lastQuery = useQuery({
