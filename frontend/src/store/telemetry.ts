@@ -21,6 +21,7 @@ export type LivePoint = {
 type Series = { deviceId: string; points: LivePoint[] };
 
 const MAX_POINTS = 600; // ~10 min a 1 Hz
+const EMPTY_POINTS: LivePoint[] = [];
 
 type TelemetryState = {
   byDevice: Record<string, Series>;
@@ -33,7 +34,7 @@ type TelemetryState = {
 export const useTelemetry = create<TelemetryState>((set, get) => ({
   byDevice: {},
   push: (deviceId, p) => {
-    const cur = get().byDevice[deviceId]?.points ?? [];
+    const cur = get().byDevice[deviceId]?.points ?? EMPTY_POINTS;
     const nxt = [...cur, p].slice(-MAX_POINTS);
     set((s) => ({ byDevice: { ...s.byDevice, [deviceId]: { deviceId, points: nxt } } }));
   },
@@ -41,7 +42,7 @@ export const useTelemetry = create<TelemetryState>((set, get) => ({
     const clipped = [...initial].slice(-MAX_POINTS);
     set((s) => ({ byDevice: { ...s.byDevice, [deviceId]: { deviceId, points: clipped } } }));
   },
-  get: (deviceId) => get().byDevice[deviceId]?.points ?? [],
+  get: (deviceId) => get().byDevice[deviceId]?.points ?? EMPTY_POINTS,
   clear: (deviceId) =>
     set((s) => {
       const c = { ...s.byDevice };
@@ -49,3 +50,5 @@ export const useTelemetry = create<TelemetryState>((set, get) => ({
       return { byDevice: c };
     }),
 }));
+
+export { EMPTY_POINTS };

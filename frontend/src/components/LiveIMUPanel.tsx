@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { XYLinesChart } from "../lib/chart";
 import { getSeries2 } from "../lib/api";
 import { subscribeLastFrame } from "../lib/ws";
-import { useTelemetry, type LivePoint } from "../store/telemetry";
+import { useTelemetry, type LivePoint, EMPTY_POINTS } from "../store/telemetry";
 
 type RawSample = Record<string, unknown>;
 
@@ -113,7 +113,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
   const push = useTelemetry((state) => state.push);
   const reset = useTelemetry((state) => state.reset);
   const clear = useTelemetry((state) => state.clear);
-  const points = useTelemetry((state) => state.get(deviceId));
+  const points = useTelemetry((state) => state.byDevice[deviceId]?.points ?? EMPTY_POINTS);
 
   useEffect(() => {
     setIsLive(true);
