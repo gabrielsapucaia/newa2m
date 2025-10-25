@@ -3,7 +3,6 @@ import ReactECharts from "echarts-for-react";
 
 type LineSpec = { key: string; name?: string };
 type Props = {
-  id: string;
   data: any[];
   lines: LineSpec[];
   xDomain: [number, number];
@@ -12,7 +11,7 @@ type Props = {
   showDataZoom?: boolean;
 };
 
-export default function EChartSeries({ id, data, lines, xDomain, height = 180, onRangeChange, showDataZoom = false }: Props) {
+export default function EChartSeries({ data, lines, xDomain, height = 180, onRangeChange, showDataZoom = false }: Props) {
   const chartRef = useRef<ReactECharts>(null);
 
   const series = useMemo(() => {
@@ -65,13 +64,20 @@ export default function EChartSeries({ id, data, lines, xDomain, height = 180, o
   useEffect(() => {
     const inst = chartRef.current?.getEchartsInstance();
     if (!inst || !onRangeChange) return;
-    const handler = () => {
-      const model = inst.getModel();
-      const ecXAxis: any = model.getComponent("xAxis");
-      const axis = ecXAxis?.axis;
-      const extent = axis?.scale?.getExtent?.();
-      if (extent && Number.isFinite(extent[0]) && Number.isFinite(extent[1])) {
-        onRangeChange([extent[0], extent[1]]);
+    const handler = (evt: any) => {
+      const payload = Array.isArray(evt?.batch) && evt.batch.length ? evt.batch[0] : evt;
+      const start = Number(payload?.startValue ?? payload?.start);
+      const end = Number(payload?.endValue ?? payload?.end);
+      if (Number.isFinite(start) && Number.isFinite(end)) {
+        onRangeChange([start, end]);
+        return;
+      }
+      const opt = inst.getOption?.();
+      const axis = Array.isArray(opt?.xAxis) ? opt.xAxis[0] : undefined;
+      const min = Number(axis?.min);
+      const max = Number(axis?.max);
+      if (Number.isFinite(min) && Number.isFinite(max)) {
+        onRangeChange([min, max]);
       }
     };
     inst.on("dataZoom", handler);
