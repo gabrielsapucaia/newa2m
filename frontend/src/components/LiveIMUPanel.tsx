@@ -1,17 +1,37 @@
-ï»¿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { XYLinesChart, XYLinesWithBrush } from "../lib/chart";
-import { useTelemetry, EMPTY_POINTS, type LivePoint } from "../store/telemetry";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { XYLinesChart } from "../lib/chart";
+import TimeNavigator from "./TimeNavigator";
+import { useTelemetry, type LivePoint, EMPTY_POINTS } from "../store/telemetry";
 import { subscribeLastFrame, unsubscribeLastFrame } from "../lib/ws";
 import { getSeries2 } from "../lib/api";
+import { debounce, throttle, MINUTE_MS } from "../lib/timeutils";
 
 type RawSample = Record<string, unknown>;
 
-const VIEW_WINDOW_MS = 10 * 60 * 1000;
-const FLUSH_MS = 1_000;
-const TICK_MS = 100;
-const BACKFILL_WINDOW_SEC = 600;
-const BACKFILL_THRESHOLD_MS = 5_000;
-const MIN_BRUSH_SPAN_MS = 10_000;
+type LivePointT = LivePoint & { t: number };
+
+const WINDOW_MS = 10 * MINUTE_MS; // 10 minutos visíveis
+const FLUSH_MS = 1_000; // aplica lote WS a cada 1 s
+const TICK_MS = 100; // deslize suave do eixo
+const BACKFILL_CHUNK_MS = 10 * MINUTE_MS; // 10 min por requisição
+const BACKFILL_THRESHOLD_MS = 30_000; // quando a janela encosta em 30 s do ponto mais antigo
+
+const FIELD_PATHS = {
+  speed: ["speed", "gnss.speed"],
+  cn0_avg: ["cn0_avg", "cn0", "gnss.cn0_avg", "gnss.cn0.p50"],
+  sats_used: ["sats_used", "sats", "gnss.num_sats", "gnss.sats_used"],
+  baro: ["baro", "pressure", "baro.pressure_hpa", "baro.altitude_m"],
+  imu_acc_rms_x: ["imu_acc_rms_x", "imu_rms_x", "imu.acc.x.rms", "imu.linear_acc.x.rms"],
+  imu_acc_rms_y: ["imu_acc_rms_y", "imu_rms_y", "imu.acc.y.rms", "imu.linear_acc.y.rms"],
+  imu_acc_rms_z: ["imu_acc_rms_z", "imu_rms_z", "imu.acc.z.rms", "imu.linear_acc.z.rms"],
+  imu_gyro_rms_x: ["imu_gyro_rms_x", "imu.gyro.x.rms"],
+  imu_gyro_rms_y: ["imu_gyro_rms_y", "imu.gyro.y.rms"],
+  imu_gyro_rms_z: ["imu_gyro_rms_z", "imu.gyro.z.rms"],
+  imu_jerk_rms_x: ["imu_jerk_rms_x", "jerk_x", "imu.jerk.x.rms"],
+  imu_jerk_rms_y: ["imu_jerk_rms_y", "jerk_y", "imu.jerk.y.rms"],
+  imu_jerk_rms_z: ["imu_jerk_rms_z", "jerk_z", "imu.jerk.z.rms"],
+  shock_level: ["shock_level", "imu.motion.shock_score", "imu.motion.shock_level"],
+};
 
 function safeNumber(value: unknown): number | null {
   if (value === null || value === undefined) return null;
@@ -39,7 +59,7 @@ function mergePayload(raw: RawSample): RawSample {
   return raw;
 }
 
-function pickNumber(source: RawSample, candidates: string[]): number | null {
+function pickNumber(source: RawSample, candidates: readonly string[]): number | null {
   for (const key of candidates) {
     const value = safeNumber(readPath(source, key));
     if (value !== null) return value;
@@ -48,7 +68,7 @@ function pickNumber(source: RawSample, candidates: string[]): number | null {
 }
 
 function pickShockLevel(source: RawSample): number | null {
-  const numeric = pickNumber(source, ["shock_level", "imu.motion.shock_score"]);
+  const numeric = pickNumber(source, FIELD_PATHS.shock_level);
   if (numeric !== null) return numeric;
   const raw = readPath(source, "imu.motion.shock_level") ?? readPath(source, "shock_level");
   if (typeof raw === "string") {
@@ -71,106 +91,99 @@ function toMillis(value: unknown): number {
   return Date.now();
 }
 
-function toPoint(raw: RawSample): LivePoint {
+function toPoint(raw: RawSample): LivePointT {
   const merged = mergePayload(raw);
   const tsCandidate =
     readPath(merged, "ts") ??
     readPath(merged, "timestamp") ??
     readPath(merged, "ts_epoch") ??
     readPath(merged, "gnss.ts") ??
-    readPath(merged, "payload.ts");
+    readPath(merged, "payload.ts") ??
+    new Date().toISOString();
 
   const t = toMillis(tsCandidate);
-  const speedMs = pickNumber(merged, ["speed", "gnss.speed"]);
-  const cn0 = pickNumber(merged, ["cn0_avg", "cn0", "gnss.cn0_avg", "gnss.cn0.p50"]);
-  const sats = pickNumber(merged, ["sats_used", "sats", "gnss.num_sats", "gnss.sats_used"]);
-  const baro = pickNumber(merged, ["baro", "pressure", "baro.pressure_hpa", "baro.altitude_m"]);
-  const accX = pickNumber(merged, ["imu_acc_rms_x", "imu_rms_x", "imu.acc.x.rms", "imu.linear_acc.x.rms"]);
-  const accY = pickNumber(merged, ["imu_acc_rms_y", "imu_rms_y", "imu.acc.y.rms", "imu.linear_acc.y.rms"]);
-  const accZ = pickNumber(merged, ["imu_acc_rms_z", "imu_rms_z", "imu.acc.z.rms", "imu.linear_acc.z.rms"]);
-  const gyroX = pickNumber(merged, ["imu_gyro_rms_x", "imu.gyro.x.rms"]);
-  const gyroY = pickNumber(merged, ["imu_gyro_rms_y", "imu.gyro.y.rms"]);
-  const gyroZ = pickNumber(merged, ["imu_gyro_rms_z", "imu.gyro.z.rms"]);
-  const jerkX = pickNumber(merged, ["imu_jerk_rms_x", "jerk_x", "imu.jerk.x.rms"]);
-  const jerkY = pickNumber(merged, ["imu_jerk_rms_y", "jerk_y", "imu.jerk.y.rms"]);
-  const jerkZ = pickNumber(merged, ["imu_jerk_rms_z", "jerk_z", "imu.jerk.z.rms"]);
-  const shock = pickShockLevel(merged);
-
   return {
     ts: new Date(t).toISOString(),
     t,
-    speed: speedMs !== null ? Number((speedMs * 3.6).toFixed(3)) : null,
-    cn0_avg: cn0,
-    sats_used: sats,
-    baro,
-    imu_acc_rms_x: accX,
-    imu_acc_rms_y: accY,
-    imu_acc_rms_z: accZ,
-    imu_gyro_rms_x: gyroX,
-    imu_gyro_rms_y: gyroY,
-    imu_gyro_rms_z: gyroZ,
-    imu_jerk_rms_x: jerkX,
-    imu_jerk_rms_y: jerkY,
-    imu_jerk_rms_z: jerkZ,
-    shock_level: shock,
+    speed: pickNumber(merged, FIELD_PATHS.speed),
+    cn0_avg: pickNumber(merged, FIELD_PATHS.cn0_avg),
+    sats_used: pickNumber(merged, FIELD_PATHS.sats_used),
+    baro: pickNumber(merged, FIELD_PATHS.baro),
+    imu_acc_rms_x: pickNumber(merged, FIELD_PATHS.imu_acc_rms_x),
+    imu_acc_rms_y: pickNumber(merged, FIELD_PATHS.imu_acc_rms_y),
+    imu_acc_rms_z: pickNumber(merged, FIELD_PATHS.imu_acc_rms_z),
+    imu_gyro_rms_x: pickNumber(merged, FIELD_PATHS.imu_gyro_rms_x),
+    imu_gyro_rms_y: pickNumber(merged, FIELD_PATHS.imu_gyro_rms_y),
+    imu_gyro_rms_z: pickNumber(merged, FIELD_PATHS.imu_gyro_rms_z),
+    imu_jerk_rms_x: pickNumber(merged, FIELD_PATHS.imu_jerk_rms_x),
+    imu_jerk_rms_y: pickNumber(merged, FIELD_PATHS.imu_jerk_rms_y),
+    imu_jerk_rms_z: pickNumber(merged, FIELD_PATHS.imu_jerk_rms_z),
+    shock_level: pickShockLevel(merged),
   };
-}
-
-function computeBrushBounds(data: LivePoint[], domain: [number, number]) {
-  if (!data.length) return { startIndex: 0, endIndex: 0 };
-  const [start, end] = domain;
-  let startIndex = data.findIndex((item) => item.t >= start);
-  if (startIndex === -1) startIndex = 0;
-  let endIndex = data.findIndex((item) => item.t > end);
-  if (endIndex === -1) endIndex = data.length - 1;
-  else endIndex = Math.max(startIndex, endIndex - 1);
-  return { startIndex, endIndex };
 }
 
 function clampDomain(domain: [number, number]): [number, number] {
   const [start, end] = domain;
-  if (end - start < MIN_BRUSH_SPAN_MS) {
-    return [end - MIN_BRUSH_SPAN_MS, end];
+  if (end - start < MINUTE_MS) {
+    return [end - MINUTE_MS, end];
   }
   return domain;
 }
 
 export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
-  const [isLive, setIsLive] = useState(true);
   const appendMany = useTelemetry((state) => state.appendMany);
+  const prependMany = useTelemetry((state) => state.prependMany);
   const reset = useTelemetry((state) => state.reset);
-  const pointsRaw = useTelemetry((state) => state.byDevice[deviceId]?.points ?? EMPTY_POINTS);
+  const setOldest = useTelemetry((state) => state.setOldest);
+  const setXDomain = useTelemetry((state) => state.setXDomain);
+  const series = useTelemetry((state) => state.byDevice[deviceId]);
 
-  const points = useMemo<LivePoint[]>(() => {
-    if (!pointsRaw.length) return EMPTY_POINTS;
-    return [...pointsRaw].sort((a, b) => a.t - b.t);
-  }, [pointsRaw]);
+  const pointsRaw = series?.points ?? EMPTY_POINTS;
+  const points = useMemo<LivePointT[]>(() => pointsRaw as LivePointT[], [pointsRaw]);
+  const storedDomain = series?.xDomain ?? null;
+  const oldestLoaded = series?.oldest ?? (points.length ? points[0].t : Date.now());
 
-  const stagingRef = useRef<LivePoint[]>([]);
-  const flushTimer = useRef<number | undefined>(undefined);
-  const brushDebounceRef = useRef<number | undefined>(undefined);
-  const requestedEndsRef = useRef<Set<number>>(new Set());
-  const backfillPendingRef = useRef(false);
-  const lastBackfillTsRef = useRef(0);
+  const [isLive, setIsLive] = useState(true);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
-  const [manualDomain, setManualDomain] = useState<[number, number] | null>(null);
+  useEffect(() => {
+    const id = window.setInterval(() => setNowMs(Date.now()), TICK_MS);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const liveDomain: [number, number] = [nowMs - WINDOW_MS, nowMs];
+  const activeDomain: [number, number] = clampDomain(isLive ? liveDomain : storedDomain ?? liveDomain);
+
+  useEffect(() => {
+    if (isLive) {
+      setXDomain(deviceId, liveDomain);
+    }
+  }, [deviceId, liveDomain[0], liveDomain[1], isLive, setXDomain]);
+
+  const stagingRef = useRef<LivePointT[]>([]);
 
   useEffect(() => {
     let mounted = true;
 
     const hydrate = async () => {
-      const attempt = async (bucket: { bucket: string; window_sec: number; end?: string }) => {
-        const seed = await getSeries2(deviceId, bucket);
-        const rows = Array.isArray(seed?.data) ? (seed.data as RawSample[]) : [];
+      const attempt = async (params: { bucket: string; window_sec: number; end?: string }) => {
+        const seed = await getSeries2(deviceId, params);
         if (!mounted) return;
-        reset(deviceId, rows.map(toPoint));
+        const rows = Array.isArray(seed?.data) ? (seed.data as RawSample[]) : [];
+        const mapped = rows.map(toPoint);
+        reset(deviceId, mapped);
+        if (mapped.length) {
+          const oldest = Math.min(...mapped.map((p) => p.t));
+          setOldest(deviceId, oldest);
+          setXDomain(deviceId, liveDomain);
+        }
       };
 
       try {
-        await attempt({ bucket: "1s", window_sec: BACKFILL_WINDOW_SEC });
+        await attempt({ bucket: "1s", window_sec: BACKFILL_CHUNK_MS / 1000 });
       } catch {
         try {
-          await attempt({ bucket: "10s", window_sec: BACKFILL_WINDOW_SEC });
+          await attempt({ bucket: "10s", window_sec: BACKFILL_CHUNK_MS / 1000 });
         } catch (error) {
           if (mounted) reset(deviceId, []);
           console.error("[LiveIMUPanel] backfill inicial falhou", error);
@@ -183,13 +196,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
     return () => {
       mounted = false;
     };
-  }, [deviceId, reset]);
-
-  useEffect(() => {
-    return () => {
-      unsubscribeLastFrame();
-    };
-  }, []);
+  }, [deviceId, reset, setOldest, setXDomain, liveDomain]);
 
   useEffect(() => {
     if (!isLive) {
@@ -216,111 +223,67 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
       appendMany(deviceId, batch);
     };
 
-    if (!isLive) {
-      flush();
-      return;
-    }
-
-    flushTimer.current = window.setInterval(flush, FLUSH_MS) as unknown as number;
-
+    const id = window.setInterval(flush, FLUSH_MS) as unknown as number;
     return () => {
-      if (flushTimer.current) window.clearInterval(flushTimer.current);
+      window.clearInterval(id);
       flush();
     };
-  }, [deviceId, isLive, appendMany]);
-
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    const id = window.setInterval(() => setNowMs(Date.now()), TICK_MS);
-    return () => window.clearInterval(id);
-  }, []);
-
-  useEffect(() => {
-    if (isLive) {
-      setManualDomain(null);
-    }
-  }, [isLive]);
-
-  const latestSampleTs = points.length ? points[points.length - 1].t : nowMs;
-  const defaultDomain: [number, number] = [latestSampleTs - VIEW_WINDOW_MS, latestSampleTs];
-  const activeDomain = clampDomain(manualDomain ?? [defaultDomain[0], Math.max(nowMs, defaultDomain[1])]);
-
-  const { startIndex: brushStartIndex, endIndex: brushEndIndex } = useMemo(
-    () => computeBrushBounds(points, activeDomain),
-    [points, activeDomain],
-  );
-
-  const requestBackfill = useCallback(
-    async (endMs: number) => {
-      if (endMs <= 0 || backfillPendingRef.current) return;
-      const now = Date.now();
-      if (now - lastBackfillTsRef.current < 1_000) return;
-      const bucketKey = Math.floor(endMs / 1_000);
-      if (requestedEndsRef.current.has(bucketKey)) return;
-
-      backfillPendingRef.current = true;
-      lastBackfillTsRef.current = now;
-      requestedEndsRef.current.add(bucketKey);
-
-      try {
-        const seed = await getSeries2(deviceId, {
-          bucket: "1s",
-          window_sec: BACKFILL_WINDOW_SEC,
-          end: new Date(endMs).toISOString(),
-        });
-        const rows = Array.isArray(seed?.data) ? (seed.data as RawSample[]) : [];
-        if (rows.length) appendMany(deviceId, rows.map(toPoint));
-      } catch (error) {
-        console.error("[LiveIMUPanel] backfill incremental falhou", error);
-      } finally {
-        backfillPendingRef.current = false;
-      }
-    },
-    [appendMany, deviceId],
-  );
-
-  const earliestTs = points.length ? points[0].t : null;
-  useEffect(() => {
-    if (!manualDomain || earliestTs === null) return;
-    const [start] = manualDomain;
-    if (start <= earliestTs + BACKFILL_THRESHOLD_MS) {
-      void requestBackfill(earliestTs - 1);
-    }
-  }, [manualDomain, earliestTs, requestBackfill]);
+  }, [deviceId, appendMany]);
 
   useEffect(() => {
     return () => {
-      if (brushDebounceRef.current) window.clearTimeout(brushDebounceRef.current);
+      unsubscribeLastFrame();
     };
   }, []);
 
-  const handleBrushChange = useCallback(
-    (range: { startIndex?: number; endIndex?: number }) => {
-      const { startIndex, endIndex } = range;
-      if (startIndex === undefined || endIndex === undefined) return;
-      if (!points.length) return;
-      const safeStart = Math.max(0, Math.min(startIndex, points.length - 1));
-      const safeEnd = Math.max(safeStart, Math.min(endIndex, points.length - 1));
-      const startPoint = points[safeStart];
-      const endPoint = points[safeEnd];
-      if (!startPoint || !endPoint) return;
-      const nextDomain = clampDomain([startPoint.t, endPoint.t]);
+  const requestedEndsRef = useRef<Set<number>>(new Set());
+  const fetchBackfill = useMemo(
+    () =>
+      throttle(async (endMs: number) => {
+        const bucketKey = Math.floor(endMs / 1_000);
+        if (requestedEndsRef.current.has(bucketKey)) return;
+        requestedEndsRef.current.add(bucketKey);
+        try {
+          const seed = await getSeries2(deviceId, {
+            bucket: "1s",
+            window_sec: BACKFILL_CHUNK_MS / 1000,
+            end: new Date(endMs).toISOString(),
+          });
+          const rows = Array.isArray(seed?.data) ? (seed.data as RawSample[]) : [];
+          if (!rows.length) return;
+          const mapped = rows.map(toPoint);
+          prependMany(deviceId, mapped);
+          const newestOld = Math.min(...mapped.map((p) => p.t));
+          setOldest(deviceId, newestOld);
+        } catch (error) {
+          console.error("[LiveIMUPanel] backfill incremental falhou", error);
+        }
+      }, 1_000),
+    [deviceId, prependMany, setOldest],
+  );
 
-      if (brushDebounceRef.current) window.clearTimeout(brushDebounceRef.current);
-      brushDebounceRef.current = window.setTimeout(() => {
+  useEffect(() => {
+    const leftEdge = activeDomain[0];
+    if (leftEdge - oldestLoaded <= BACKFILL_THRESHOLD_MS) {
+      fetchBackfill(Math.max(oldestLoaded - 1, 0));
+    }
+  }, [activeDomain, oldestLoaded, fetchBackfill]);
+
+  const handleBrushRange = useMemo(
+    () =>
+      debounce((range: [number, number]) => {
         setIsLive(false);
-        setManualDomain(nextDomain);
-      }, 150) as unknown as number;
-    },
-    [points],
+        setXDomain(deviceId, clampDomain(range));
+      }, 150),
+    [deviceId, setXDomain],
   );
 
-  const handleGoLive = () => {
+  const goLive = () => {
     setIsLive(true);
-    setManualDomain(null);
+    setXDomain(deviceId, liveDomain);
   };
 
-  const handlePause = () => {
+  const pauseLive = () => {
     setIsLive(false);
   };
 
@@ -329,13 +292,13 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
-        <button onClick={handleGoLive} className={`px-2 py-1 rounded-2xl border border-slate-700 ${isLive ? "bg-sky-600 text-white" : "bg-slate-900 text-slate-100 hover:bg-slate-800"}`}>
+        <button onClick={goLive} className={`px-2 py-1 rounded-2xl border border-slate-700 ${isLive ? "bg-sky-600 text-white" : "bg-slate-900 text-slate-100 hover:bg-slate-800"}`}>
           Ao vivo
         </button>
-        <button onClick={handlePause} className={`px-2 py-1 rounded-2xl border border-slate-700 ${!isLive ? "bg-sky-600 text-white" : "bg-slate-900 text-slate-100 hover:bg-slate-800"}`}>
+        <button onClick={pauseLive} className={`px-2 py-1 rounded-2xl border border-slate-700 ${!isLive ? "bg-sky-600 text-white" : "bg-slate-900 text-slate-100 hover:bg-slate-800"}`}>
           Pausar
         </button>
-        <span className="text-xs text-slate-400">Ãšltimos ~10 min â€¢ {points.length} pts</span>
+        <span className="text-xs text-slate-400">Janela {new Date(activeDomain[0]).toLocaleTimeString("pt-BR", { hour12: false })} ? {new Date(activeDomain[1]).toLocaleTimeString("pt-BR", { hour12: false })}</span>
       </div>
 
       <div className="rounded-2xl border border-slate-800 bg-slate-900 p-3 shadow-lg">
@@ -350,6 +313,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           height={170}
           xDomain={activeDomain}
           syncId={syncId}
+          syncMethod="value"
         />
       </div>
 
@@ -365,6 +329,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           height={160}
           xDomain={activeDomain}
           syncId={syncId}
+          syncMethod="value"
         />
       </div>
 
@@ -380,24 +345,29 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           height={160}
           xDomain={activeDomain}
           syncId={syncId}
+          syncMethod="value"
         />
       </div>
 
-      <XYLinesWithBrush
-        data={points}
-        lines={[
-          { key: "speed", name: "Speed (km/h)" },
-          { key: "cn0_avg", name: "CN0 (dB-Hz)" },
-          { key: "sats_used", name: "#Sats" },
-        ]}
-        height={200}
-        xDomain={activeDomain}
-        syncId={syncId}
-        brushProps={{ onChange: handleBrushChange, startIndex: brushStartIndex, endIndex: brushEndIndex }}
-      />
+      <div className="rounded-2xl border border-slate-800 bg-slate-900 p-3 shadow-lg">
+        <div className="mb-1 text-sm font-semibold text-slate-200">GNSS / Operação</div>
+        <XYLinesChart
+          data={points}
+          lines={[
+            { key: "speed", name: "Speed (km/h)" },
+            { key: "cn0_avg", name: "CN0 (dB-Hz)" },
+            { key: "sats_used", name: "#Sats" },
+          ]}
+          height={160}
+          xDomain={activeDomain}
+          syncId={syncId}
+          syncMethod="value"
+        />
+        <TimeNavigator data={points} xDomain={activeDomain} onBrush={handleBrushRange} syncId={syncId} />
+      </div>
 
       <div className="rounded-2xl border border-slate-800 bg-slate-900 p-3 shadow-lg">
-        <div className="mb-1 text-sm font-semibold text-slate-200">Barometro / Choque</div>
+        <div className="mb-1 text-sm font-semibold text-slate-200">Barômetro / Choque</div>
         <XYLinesChart
           data={points}
           lines={[
@@ -407,6 +377,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           height={160}
           xDomain={activeDomain}
           syncId={syncId}
+          syncMethod="value"
         />
       </div>
     </div>
