@@ -92,7 +92,8 @@ export default function EChartSeries({ data, lines, xDomain, height = 180, onRan
       option={option}
       onEvents={onEvents}
       style={{ width: "100%", height }}
-      notMerge
+      notMerge={false}
+      lazyUpdate
     />
   );
 }
