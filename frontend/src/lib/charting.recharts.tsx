@@ -1,4 +1,4 @@
-import { ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, Legend, Brush } from "recharts";
+﻿import { ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, Legend, Brush } from "recharts";
 import type { ChartProps } from "./charting";
 
 const fmtX = (v: any) => {
@@ -60,8 +60,18 @@ export function XYLinesWithBrush(props: ChartProps & { brush?: boolean }) {
         {rest.lines.map((l) => (
           <Line key={l.key} type="monotone" dot={false} isAnimationActive={false} dataKey={l.key} name={l.name ?? l.key} />
         ))}
-        {brush && len >= 2 && <Brush dataKey={xKey} startIndex={startIndex} endIndex={endIndex} travellerWidth={8} height={18} />}
+        {brush && len >= 2 && (
+          <Brush
+            dataKey={xKey}
+            startIndex={startIndex}
+            endIndex={endIndex}
+            travellerWidth={8}
+            height={18}
+            onChange={rest.onBrushChange}
+          />
+        )}
       </LineChart>
     </ResponsiveContainer>
   );
 }
+

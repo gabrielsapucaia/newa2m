@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+ï»¿import { useEffect, useMemo, useRef, useState } from "react";
 import { XYLinesChart } from "../lib/chart";
 import TimeNavigator from "./TimeNavigator";
 import { useTelemetry, type LivePoint, EMPTY_POINTS } from "../store/telemetry";
@@ -10,10 +10,10 @@ type RawSample = Record<string, unknown>;
 
 type LivePointT = LivePoint & { t: number };
 
-const WINDOW_MS = 10 * MINUTE_MS; // 10 minutos visíveis
+const WINDOW_MS = 10 * MINUTE_MS; // 10 minutos visÃ­veis
 const FLUSH_MS = 1_000; // aplica lote WS a cada 1 s
 const TICK_MS = 100; // deslize suave do eixo
-const BACKFILL_CHUNK_MS = 10 * MINUTE_MS; // 10 min por requisição
+const BACKFILL_CHUNK_MS = 10 * MINUTE_MS; // 10 min por requisiÃ§Ã£o
 const BACKFILL_THRESHOLD_MS = 30_000; // quando a janela encosta em 30 s do ponto mais antigo
 
 const FIELD_PATHS = {
@@ -161,9 +161,14 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
       : [Date.now() - MINUTE_MS, Date.now()];
   const activeDomain: [number, number] = clampDomain(isLive ? liveDomain : safeXDomain);
 
+  const liveDomainRef = useRef<[number, number] | null>(null);
   useEffect(() => {
-    if (isLive) {
-      setXDomain(deviceId, liveDomain);
+    if (!isLive) return;
+    const domain: [number, number] = [liveDomain[0], liveDomain[1]];
+    const last = liveDomainRef.current;
+    if (!last || Math.abs(domain[0] - last[0]) > 500 || Math.abs(domain[1] - last[1]) > 500) {
+      liveDomainRef.current = domain;
+      setXDomain(deviceId, domain);
     }
   }, [deviceId, liveDomain[0], liveDomain[1], isLive, setXDomain]);
 
@@ -357,7 +362,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
       </div>
 
       <div className="rounded-2xl border border-slate-800 bg-slate-900 p-3 shadow-lg">
-        <div className="mb-1 text-sm font-semibold text-slate-200">GNSS / Operação</div>
+        <div className="mb-1 text-sm font-semibold text-slate-200">GNSS / OperaÃ§Ã£o</div>
         <XYLinesChart
           data={points}
           lines={[
@@ -374,7 +379,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
       </div>
 
       <div className="rounded-2xl border border-slate-800 bg-slate-900 p-3 shadow-lg">
-        <div className="mb-1 text-sm font-semibold text-slate-200">Barômetro / Choque</div>
+        <div className="mb-1 text-sm font-semibold text-slate-200">BarÃ´metro / Choque</div>
         <XYLinesChart
           data={points}
           lines={[
@@ -390,5 +395,6 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
     </div>
   );
 }
+
 
 
