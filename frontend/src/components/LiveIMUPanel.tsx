@@ -25,6 +25,7 @@ const FIELD_PATHS = {
   imu_gyro_rms_x: ["imu_gyro_rms_x", "imu.gyro.x.rms", "imu.gyro.rms.x", "gyro_rms_x"],
   imu_gyro_rms_y: ["imu_gyro_rms_y", "imu.gyro.y.rms", "imu.gyro.rms.y", "gyro_rms_y"],
   imu_gyro_rms_z: ["imu_gyro_rms_z", "imu.gyro.z.rms", "imu.gyro.rms.z", "gyro_rms_z"],
+  imu_gyro_norm: ["imu_gyro_norm", "imu.gyro.norm.rms", "imu.gyro.rms", "gyro_norm_rms"],
   imu_jerk_rms_x: ["imu_jerk_rms_x", "jerk_x", "imu.jerk.x.rms", "imu.jerk.rms.x"],
   imu_jerk_rms_y: ["imu_jerk_rms_y", "jerk_y", "imu.jerk.y.rms", "imu.jerk.rms.y"],
   imu_jerk_rms_z: ["imu_jerk_rms_z", "jerk_z", "imu.jerk.z.rms", "imu.jerk.rms.z"],
@@ -109,6 +110,7 @@ function toPoint(raw: RawSample): LivePointT {
     new Date().toISOString();
 
   const t = toMillis(tsCandidate);
+  const gyroNorm = pickNumber(merged, FIELD_PATHS.imu_gyro_norm);
   return {
     ts: new Date(t).toISOString(),
     t,
@@ -119,9 +121,9 @@ function toPoint(raw: RawSample): LivePointT {
     imu_acc_rms_x: pickNumber(merged, FIELD_PATHS.imu_acc_rms_x),
     imu_acc_rms_y: pickNumber(merged, FIELD_PATHS.imu_acc_rms_y),
     imu_acc_rms_z: pickNumber(merged, FIELD_PATHS.imu_acc_rms_z),
-    imu_gyro_rms_x: pickNumber(merged, FIELD_PATHS.imu_gyro_rms_x),
-    imu_gyro_rms_y: pickNumber(merged, FIELD_PATHS.imu_gyro_rms_y),
-    imu_gyro_rms_z: pickNumber(merged, FIELD_PATHS.imu_gyro_rms_z),
+    imu_gyro_rms_x: pickNumber(merged, FIELD_PATHS.imu_gyro_rms_x) ?? gyroNorm,
+    imu_gyro_rms_y: pickNumber(merged, FIELD_PATHS.imu_gyro_rms_y) ?? gyroNorm,
+    imu_gyro_rms_z: pickNumber(merged, FIELD_PATHS.imu_gyro_rms_z) ?? gyroNorm,
     imu_jerk_rms_x: pickNumber(merged, FIELD_PATHS.imu_jerk_rms_x),
     imu_jerk_rms_y: pickNumber(merged, FIELD_PATHS.imu_jerk_rms_y),
     imu_jerk_rms_z: pickNumber(merged, FIELD_PATHS.imu_jerk_rms_z),

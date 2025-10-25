@@ -16,15 +16,30 @@ export default function EChartSeries({ data, lines, xDomain, height = 180, onRan
 
   const series = useMemo(() => {
     const arr = Array.isArray(data) ? data : [];
-    return lines.map((l) => ({
-      name: l.name ?? l.key,
-      type: "line",
-      showSymbol: false,
-      smooth: true,
-      emphasis: { focus: "series" },
-      data: arr.map((p: any) => [Number(p.t ?? Date.parse(p.ts)), p[l.key] ?? null]),
-    }));
-  }, [data, lines]);
+    return lines.map((l) => {
+      const lineData: [number, number][] = [];
+      for (const sample of arr) {
+        const ts = Number(sample.t ?? Date.parse(sample.ts));
+        if (!Number.isFinite(ts)) {
+          continue;
+        }
+        const raw = sample[l.key];
+        const value = Number(raw);
+        if (Number.isFinite(value)) {
+          lineData.push([ts, value]);
+        }
+      }
+      return {
+        name: l.name ?? l.key,
+        type: "line",
+        showSymbol: false,
+        smooth: true,
+        emphasis: { focus: "series" },
+        connectNulls: true,
+        data: lineData,
+      };
+    });
+  }, [data, lines, xDomain]);
 
   const option = useMemo(
     () => ({
@@ -41,6 +56,7 @@ export default function EChartSeries({ data, lines, xDomain, height = 180, onRan
       },
       yAxis: {
         type: "value",
+        scale: true,
         axisLabel: { color: "#9ca3af" },
         axisLine: { lineStyle: { color: "#374151" } },
         splitLine: { lineStyle: { color: "#1f2937" } },
