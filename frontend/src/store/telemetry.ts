@@ -1,4 +1,5 @@
-import { create } from "zustand";
+﻿import { create } from "zustand";
+import { MINUTE_MS } from "../lib/timeutils";
 
 export type LivePoint = {
   ts: string; // ISO
@@ -19,10 +20,10 @@ export type LivePoint = {
   shock_level?: number | null;
 };
 
-type Series = { deviceId: string; points: LivePoint[] };
+type Series = { deviceId: string; points: LivePoint[]; oldest?: number; xDomain?: [number, number] };
 
-const BUFFER_MS = 60 * 60 * 1000; // 60 minutos
-const MAX_POINTS = Math.ceil(BUFFER_MS / 1000) + 600; // margem para lotes irregulares
+const MAX_WINDOW_MS = 60 * MINUTE_MS;
+const MAX_POINTS = Math.ceil(MAX_WINDOW_MS / 1000) + 600; // margem extra
 const EMPTY_POINTS: LivePoint[] = [];
 
 function normalise(points: LivePoint[]): LivePoint[] {
@@ -51,7 +52,7 @@ function normalise(points: LivePoint[]): LivePoint[] {
   if (dedup.length === 0) return EMPTY_POINTS;
 
   const latest = dedup[dedup.length - 1].t;
-  const cutoff = latest - BUFFER_MS;
+  const cutoff = latest - MAX_WINDOW_MS;
   const clipped = dedup.filter((sample) => sample.t >= cutoff);
   if (clipped.length > MAX_POINTS) {
     return clipped.slice(-MAX_POINTS);
@@ -62,7 +63,10 @@ function normalise(points: LivePoint[]): LivePoint[] {
 type TelemetryState = {
   byDevice: Record<string, Series>;
   appendMany: (deviceId: string, points: LivePoint[]) => void;
+  prependMany: (deviceId: string, points: LivePoint[]) => void;
   reset: (deviceId: string, initial: LivePoint[]) => void;
+  setOldest: (deviceId: string, tsMs: number) => void;
+  setXDomain: (deviceId: string, domain: [number, number]) => void;
   clear: (deviceId: string) => void;
 };
 
@@ -72,11 +76,48 @@ export const useTelemetry = create<TelemetryState>((set, get) => ({
     if (incoming.length === 0) return;
     const current = get().byDevice[deviceId]?.points ?? EMPTY_POINTS;
     const merged = normalise([...current, ...incoming]);
-    set((s) => ({ byDevice: { ...s.byDevice, [deviceId]: { deviceId, points: merged } } }));
+    set((s) => ({
+      byDevice: {
+        ...s.byDevice,
+        [deviceId]: { ...(s.byDevice[deviceId] ?? { deviceId }), deviceId, points: merged },
+      },
+    }));
+  },
+  prependMany: (deviceId, incoming) => {
+    if (!incoming?.length) return;
+    const current = get().byDevice[deviceId]?.points ?? EMPTY_POINTS;
+    const merged = normalise([...incoming, ...current]);
+    set((s) => ({
+      byDevice: {
+        ...s.byDevice,
+        [deviceId]: { ...(s.byDevice[deviceId] ?? { deviceId }), deviceId, points: merged },
+      },
+    }));
   },
   reset: (deviceId, initial) => {
     const clipped = normalise(initial);
-    set((s) => ({ byDevice: { ...s.byDevice, [deviceId]: { deviceId, points: clipped } } }));
+    set((s) => ({
+      byDevice: {
+        ...s.byDevice,
+        [deviceId]: { ...(s.byDevice[deviceId] ?? { deviceId }), deviceId, points: clipped },
+      },
+    }));
+  },
+  setOldest: (deviceId, tsMs) => {
+    set((s) => ({
+      byDevice: {
+        ...s.byDevice,
+        [deviceId]: { ...(s.byDevice[deviceId] ?? { deviceId }), deviceId, oldest: tsMs },
+      },
+    }));
+  },
+  setXDomain: (deviceId, domain) => {
+    set((s) => ({
+      byDevice: {
+        ...s.byDevice,
+        [deviceId]: { ...(s.byDevice[deviceId] ?? { deviceId }), deviceId, xDomain: domain },
+      },
+    }));
   },
   clear: (deviceId) =>
     set((s) => {
