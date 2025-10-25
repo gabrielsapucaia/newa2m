@@ -2,6 +2,9 @@ export interface DeviceStatsRow {
   device_id: string;
   last_ts: string;
   total_points: number;
+  last_lat?: number | null;
+  last_lon?: number | null;
+  last_speed?: number | null;
   lat?: number | null;
   lon?: number | null;
   speed?: number | null;

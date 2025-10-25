@@ -1,4 +1,4 @@
-import type { DeviceLastPoint, SeriesPage, StatsResponse } from "../types";
+import type { DeviceLastPoint, DeviceStatsRow, SeriesPage, StatsResponse } from "../types";
 
 const DEFAULT_BASE_URL = "http://localhost:8080";
 const ENV_BASE_URL =
@@ -42,12 +42,55 @@ async function request<T>(
   return (await res.json()) as T;
 }
 
-export async function listDevices() {
+export async function listDevices(): Promise<unknown> {
   return request(`${API_BASE_URL}/devices`);
 }
 
-export async function getStats() {
-  return request(`${API_BASE_URL}/stats`);
+export async function getStats(): Promise<StatsResponse> {
+  return request<StatsResponse>(`${API_BASE_URL}/stats`);
+}
+
+export async function getLast(deviceId: string): Promise<DeviceLastPoint> {
+  return request<DeviceLastPoint>(`${API_BASE_URL}/devices/${encodeURIComponent(deviceId)}/last`);
+}
+
+export async function getStatsWithFallback(): Promise<StatsResponse> {
+  const stats = await getStats();
+  const devices = stats?.devices ?? [];
+  const enriched = await Promise.all(
+    devices.map(async (device: DeviceStatsRow) => {
+      const hasCoords = device.lat != null && device.lon != null;
+      const hasSpeed = device.speed != null;
+
+      if (hasCoords && hasSpeed) {
+        return {
+          ...device,
+          last_lat: device.last_lat ?? device.lat ?? null,
+          last_lon: device.last_lon ?? device.lon ?? null,
+          last_speed: device.last_speed ?? device.speed ?? null,
+        };
+      }
+
+      try {
+        const last = await getLast(device.device_id);
+        return {
+          ...device,
+          last_lat: last?.lat ?? device.last_lat ?? null,
+          last_lon: last?.lon ?? device.last_lon ?? null,
+          last_speed: last?.speed ?? device.last_speed ?? null,
+        };
+      } catch (error) {
+        console.error(`fallback /last falhou para ${device.device_id}`, error);
+        return {
+          ...device,
+          last_lat: device.last_lat ?? null,
+          last_lon: device.last_lon ?? null,
+          last_speed: device.last_speed ?? null,
+        };
+      }
+    }),
+  );
+  return { ...stats, devices: enriched };
 }
 
 export async function getSeries2(deviceId: string, params: Record<string, string | number>) {

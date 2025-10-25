@@ -9,6 +9,23 @@ function wsUrl() {
   return API.replace(/^http/, "ws") + "/ws/last";
 }
 
+function safeClose(socket: WebSocket) {
+  if (socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
+    return;
+  }
+
+  if (socket.readyState === WebSocket.CONNECTING) {
+    const handleOpen = () => {
+      socket.removeEventListener("open", handleOpen);
+      socket.close();
+    };
+    socket.addEventListener("open", handleOpen);
+    return;
+  }
+
+  socket.close();
+}
+
 export function subscribeLastFrame(deviceId: string, onMsg: (payload: unknown) => void) {
   unsubscribeLastFrame();
 
@@ -31,7 +48,7 @@ export function subscribeLastFrame(deviceId: string, onMsg: (payload: unknown) =
 export function unsubscribeLastFrame() {
   if (ws) {
     try {
-      ws.close();
+      safeClose(ws);
     } catch (error) {
       console.error("Erro ao encerrar WS", error);
     }

@@ -5,6 +5,9 @@ import L from "leaflet";
 import { getSeries2, metersPerSecondToKmH } from "../lib/api";
 import { subscribeLastFrame, unsubscribeLastFrame } from "../lib/ws";
 import SpeedLegend from "./SpeedLegend";
+import MapStyleToggle from "./MapStyleToggle";
+import { useUI } from "../store/ui";
+import { MAP_LAYERS } from "../lib/mapLayers";
 
 import "leaflet/dist/leaflet.css";
 
@@ -24,8 +27,11 @@ type Pt = { ts: string; lat: number; lon: number; speed?: number | null };
 
 type Series2Response = {
   data?: Array<Record<string, unknown>>;
-  cursor?: string | null;
 };
+
+function pointKey(point: Pt) {
+  return `${point.ts}-${point.lat}-${point.lon}`;
+}
 
 function FitBounds({ points }: { points: LatLngTuple[] }) {
   const map = useMap();
@@ -57,13 +63,13 @@ function parseSeries(series?: Array<Record<string, unknown>>): Pt[] {
     .filter((item) => Number.isFinite(item.lat) && Number.isFinite(item.lon));
 }
 
-export default function MapTrack({ deviceId, liveMode = true }: { deviceId: string; liveMode?: boolean }) {
+export default function MapTrack({ deviceId }: { deviceId: string }) {
   const [points, setPoints] = useState<Pt[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
   const [livePoint, setLivePoint] = useState<Pt | null>(null);
   const loadingRef = useRef(false);
   const markerRef = useRef<LeafletMarker | null>(null);
   const animRef = useRef<number | null>(null);
+  const { liveMode: isLive, mapStyle, setMapStyle } = useUI();
 
   useEffect(() => {
     let cancelled = false;
@@ -74,7 +80,6 @@ export default function MapTrack({ deviceId, liveMode = true }: { deviceId: stri
         if (cancelled) return;
         const parsed = parseSeries(resp?.data);
         setPoints(parsed);
-        setCursor(resp?.cursor ?? null);
       } catch (error) {
         console.error("Erro ao carregar series", error);
       } finally {
@@ -88,22 +93,54 @@ export default function MapTrack({ deviceId, liveMode = true }: { deviceId: stri
     };
   }, [deviceId]);
 
-  const loadMore = async () => {
-    if (loadingRef.current || !cursor) return;
-    loadingRef.current = true;
-    try {
-      const resp = (await getSeries2(deviceId, { bucket: "10s", window_sec: 1800, cursor })) as Series2Response;
-      const parsed = parseSeries(resp?.data);
-      setPoints((prev) => [...parsed, ...prev].slice(-MAX_POINTS));
-      setCursor(resp?.cursor ?? null);
-    } catch (error) {
-      console.error("Erro ao carregar historico", error);
-    } finally {
-      loadingRef.current = false;
+  useEffect(() => {
+    if (isLive) {
+      setPoints([]);
     }
-  };
+  }, [isLive]);
 
   useEffect(() => {
+    if (!isLive) return;
+    let cancelled = false;
+
+    const refresh = async () => {
+      try {
+        const resp = (await getSeries2(deviceId, { bucket: "10s", window_sec: 1800 })) as Series2Response;
+        if (cancelled) return;
+        const parsed = parseSeries(resp?.data);
+        setPoints((prev) => {
+          const merged = new Map<string, Pt>();
+          [...prev, ...parsed].forEach((pt) => {
+            merged.set(pointKey(pt), pt);
+          });
+          return Array.from(merged.values())
+            .sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime())
+            .slice(-MAX_POINTS);
+        });
+      } catch (error) {
+        console.error("Erro ao atualizar serie ao vivo", error);
+      }
+    };
+
+    const interval = window.setInterval(refresh, 10000);
+    void refresh();
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [deviceId, isLive]);
+
+
+  useEffect(() => {
+    if (!isLive) {
+      if (animRef.current) cancelAnimationFrame(animRef.current);
+      unsubscribeLastFrame();
+      return () => {
+        if (animRef.current) cancelAnimationFrame(animRef.current);
+        unsubscribeLastFrame();
+      };
+    }
+
     function handle(message: unknown) {
       const payload = message as Record<string, unknown>;
       const lat = payload?.lat != null ? Number(payload.lat) : null;
@@ -139,7 +176,7 @@ export default function MapTrack({ deviceId, liveMode = true }: { deviceId: stri
       }
     }
 
-    if (!liveMode) {
+    if (!isLive) {
       return () => {
         if (animRef.current) cancelAnimationFrame(animRef.current);
       };
@@ -150,7 +187,7 @@ export default function MapTrack({ deviceId, liveMode = true }: { deviceId: stri
       if (animRef.current) cancelAnimationFrame(animRef.current);
       unsubscribeLastFrame();
     };
-  }, [deviceId, liveMode]);
+  }, [deviceId, isLive]);
 
   const polylinePoints: LatLngTuple[] = useMemo(
     () => points.map((pt) => [pt.lat, pt.lon] as LatLngTuple),
@@ -174,21 +211,32 @@ export default function MapTrack({ deviceId, liveMode = true }: { deviceId: stri
   }, [points]);
 
   const latestPoint: LatLngTuple = useMemo(() => {
-    if (liveMode && livePoint) return [livePoint.lat, livePoint.lon];
+    if (isLive && livePoint) return [livePoint.lat, livePoint.lon];
     if (polylinePoints.length > 0) return polylinePoints[polylinePoints.length - 1];
     return DEFAULT_CENTER;
-  }, [liveMode, livePoint, polylinePoints]);
+  }, [isLive, livePoint, polylinePoints]);
 
-  const recentPoints = useMemo(() => [...points].slice(-100).reverse(), [points]);
+  const recentPoints = useMemo(() => {
+    const seen = new Set<string>();
+    const unique: Pt[] = [];
+    for (let i = points.length - 1; i >= 0 && unique.length < 100; i -= 1) {
+      const pt = points[i];
+      const key = `${pt.ts}|${pt.lat}|${pt.lon}`;
+      if (!seen.has(key)) {
+        unique.push(pt);
+        seen.add(key);
+      }
+    }
+    return unique;
+  }, [points]);
+
+  const layer = MAP_LAYERS[mapStyle];
 
   return (
     <div className="space-y-3">
       <div className="relative h-[70vh] w-full overflow-hidden rounded border border-slate-800 bg-slate-900/80">
         <MapContainer center={latestPoint} zoom={13} scrollWheelZoom className="h-full w-full">
-          <TileLayer
-            attribution='&copy; OpenStreetMap'
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          />
+          <TileLayer key={layer.key} attribution={layer.attribution} url={layer.url} />
           {polylinePoints.length > 0 && <FitBounds points={polylinePoints} />}
           {segments.map((segment, index) => (
             <Polyline
@@ -206,27 +254,20 @@ export default function MapTrack({ deviceId, liveMode = true }: { deviceId: stri
           />
         </MapContainer>
 
-        <div className="absolute top-2 left-2 flex items-center gap-2 rounded bg-slate-900/80 px-3 py-1 text-xs text-slate-200 shadow">
-          <button
-            type="button"
-            onClick={loadMore}
-            disabled={loadingRef.current || !cursor}
-            className="rounded border border-slate-700 px-2 py-1 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            Carregar mais
-          </button>
-          {liveMode && livePoint?.speed != null && (
+        <div className="absolute top-2 left-2 z-[1000] flex items-center gap-2 rounded bg-slate-900/80 px-3 py-1 text-xs text-slate-200 shadow">
+          {isLive && livePoint?.speed != null && (
             <span>Speed: {metersPerSecondToKmH(livePoint.speed ?? 0).toFixed(1)} km/h</span>
           )}
         </div>
 
-        {!liveMode && (
-          <div className="absolute top-2 right-2 rounded bg-amber-500/80 px-3 py-1 text-xs font-semibold text-slate-900 shadow">
+        {!isLive && (
+          <div className="absolute top-14 right-2 z-[1000] rounded bg-amber-500/80 px-3 py-1 text-xs font-semibold text-slate-900 shadow">
             Ao vivo pausado
           </div>
         )}
 
         <SpeedLegend className="absolute bottom-3 right-3" />
+        <MapStyleToggle value={mapStyle} onChange={setMapStyle} className="absolute top-2 right-2 z-[1000]" />
       </div>
 
       <div className="h-48 overflow-y-auto rounded border border-slate-800 bg-slate-900/80 px-3 py-2 text-xs text-slate-300">
@@ -238,11 +279,11 @@ export default function MapTrack({ deviceId, liveMode = true }: { deviceId: stri
           <p className="text-slate-500">Nenhum ponto carregado ainda.</p>
         ) : (
           <ul className="space-y-1">
-            {recentPoints.map((point) => {
+            {recentPoints.map((point, index) => {
               const kmh = metersPerSecondToKmH(point.speed ?? 0);
               return (
                 <li
-                  key={point.ts}
+                  key={`${point.ts}-${index}`}
                   className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-1 last:border-b-0"
                 >
                   <span className="font-mono text-slate-400">{new Date(point.ts).toLocaleString()}</span>

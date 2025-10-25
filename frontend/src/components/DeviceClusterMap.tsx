@@ -1,12 +1,15 @@
 import { useMemo } from "react";
 import { MapContainer, Marker, Popup, TileLayer } from "react-leaflet";
 import MarkerClusterGroup from "react-leaflet-cluster";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import L from "leaflet";
-import { fetchDeviceLast, getStats, metersPerSecondToKmH } from "../lib/api";
-import type { DeviceLastPoint, DeviceStatsRow, StatsResponse } from "../types";
+import { getStatsWithFallback, metersPerSecondToKmH } from "../lib/api";
 import SpeedLegend from "./SpeedLegend";
+import MapStyleToggle from "./MapStyleToggle";
+import type { DeviceStatsRow, StatsResponse } from "../types";
+import { MAP_LAYERS } from "../lib/mapLayers";
+import { useUI } from "../store/ui";
 
 const DEFAULT_CENTER: [number, number] = [-10, -48];
 const iconCache = new Map<string, L.DivIcon>();
@@ -34,54 +37,26 @@ function speedColor(speedKmH: number | null | undefined) {
 }
 
 export default function DeviceClusterMap() {
-  const { data, isLoading, isError, refetch } = useQuery({
-    queryKey: ["stats"],
-    queryFn: getStats,
+  const { data, isLoading, isError, refetch } = useQuery<StatsResponse>({
+    queryKey: ["stats", "with-fallback"],
+    queryFn: getStatsWithFallback,
     refetchInterval: 10000,
   });
+  const { mapStyle, setMapStyle } = useUI();
 
-  const devices = useMemo(
-    () => ((data as StatsResponse | undefined)?.devices ?? []) as DeviceStatsRow[],
-    [data],
-  );
-
-  const missingIds = useMemo(
-    () => devices.filter((device) => device.lat == null || device.lon == null).map((device) => device.device_id),
-    [devices],
-  );
-
-  const fallbackQueries = useQueries({
-    queries: missingIds.map((deviceId) => ({
-      queryKey: ["device-last", "cluster", deviceId],
-      queryFn: () => fetchDeviceLast(deviceId),
-      staleTime: 10000,
-      refetchInterval: 10000,
-      enabled: missingIds.length > 0,
-    })),
-  }) as { data?: DeviceLastPoint }[];
-
-  const lastMap = useMemo(() => {
-    const map = new Map<string, DeviceLastPoint>();
-    fallbackQueries.forEach((query, idx) => {
-      if (query.data) {
-        map.set(missingIds[idx], query.data);
-      }
-    });
-    return map;
-  }, [fallbackQueries, missingIds]);
+  const devices = useMemo<DeviceStatsRow[]>(() => data?.devices ?? [], [data]);
 
   const enriched = useMemo(() => {
     return devices
       .map((device) => {
-        const last = device.lat == null || device.lon == null ? lastMap.get(device.device_id) : undefined;
-        const lat = device.lat ?? last?.lat ?? null;
-        const lon = device.lon ?? last?.lon ?? null;
+        const lat = device.lat ?? device.last_lat ?? null;
+        const lon = device.lon ?? device.last_lon ?? null;
         if (lat == null || lon == null) {
           return null;
         }
-        const speedMs = device.speed ?? last?.speed ?? null;
+        const speedMs = device.speed ?? device.last_speed ?? null;
         const speedKmH = speedMs != null ? metersPerSecondToKmH(speedMs) : null;
-        const lastTs = device.last_ts ?? last?.ts ?? null;
+        const lastTs = device.last_ts ?? null;
         return {
           deviceId: device.device_id,
           position: [lat, lon] as [number, number],
@@ -90,10 +65,11 @@ export default function DeviceClusterMap() {
           lastTs,
         };
       })
-      .filter(Boolean) as Array<{ deviceId: string; position: [number, number]; speedMs: number | null; speedKmH: number; lastTs: string | null }>;
-  }, [devices, lastMap]);
+      .filter(Boolean) as Array<{ deviceId: string; position: [number, number]; speedMs: number | null; speedKmH: number | null; lastTs: string | null }>;
+  }, [devices]);
 
   const center = enriched[0]?.position ?? DEFAULT_CENTER;
+  const layer = MAP_LAYERS[mapStyle];
 
   return (
     <div className="relative h-[80vh] w-full overflow-hidden rounded border border-slate-800 bg-slate-900/80">
@@ -116,10 +92,7 @@ export default function DeviceClusterMap() {
       )}
 
       <MapContainer center={center} zoom={6} scrollWheelZoom className="h-full w-full">
-        <TileLayer
-          attribution='&copy; OpenStreetMap'
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-        />
+        <TileLayer key={layer.key} attribution={layer.attribution} url={layer.url} />
         <MarkerClusterGroup chunkedLoading>
           {enriched.map(({ deviceId, position, speedMs, speedKmH, lastTs }) => {
             const icon = getMarkerIcon(speedColor(speedKmH));
@@ -129,7 +102,9 @@ export default function DeviceClusterMap() {
                   <div className="space-y-1 text-sm">
                     <div className="font-semibold">{deviceId}</div>
                     <div className="text-xs text-slate-500">Ultimo registro: {lastTs ?? "--"}</div>
-                    <div className="text-xs text-slate-500">Speed: {speedMs != null ? `${speedKmH.toFixed(1)} km/h` : "--"}</div>
+                    <div className="text-xs text-slate-500">
+                      Speed: {speedMs != null && speedKmH != null ? `${speedKmH.toFixed(1)} km/h` : "--"}
+                    </div>
                     <Link
                       to={`/device/${encodeURIComponent(deviceId)}`}
                       className="inline-flex text-xs text-sky-600 hover:underline"
@@ -145,6 +120,7 @@ export default function DeviceClusterMap() {
       </MapContainer>
 
       <SpeedLegend className="absolute bottom-3 right-3" />
+      <MapStyleToggle value={mapStyle} onChange={setMapStyle} className="absolute top-3 right-3 z-[1000]" />
     </div>
   );
 }
