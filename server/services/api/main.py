@@ -153,9 +153,13 @@ async def series2(
                     avg(imu_rms_x) AS imu_rms_x,
                     avg(imu_rms_y) AS imu_rms_y,
                     avg(imu_rms_z) AS imu_rms_z,
+                    avg((payload->>'imu.gyro.x.rms')::double precision) AS imu_gyro_rms_x,
+                    avg((payload->>'imu.gyro.y.rms')::double precision) AS imu_gyro_rms_y,
+                    avg((payload->>'imu.gyro.z.rms')::double precision) AS imu_gyro_rms_z,
                     avg(jerk_x) AS jerk_x,
                     avg(jerk_y) AS jerk_y,
-                    avg(jerk_z) AS jerk_z
+                    avg(jerk_z) AS jerk_z,
+                    avg((payload->>'imu.motion.shock_score')::double precision) AS shock_level
                 FROM v_telemetry_enriched
                 WHERE device_id = %s
                   AND ts >= %s
