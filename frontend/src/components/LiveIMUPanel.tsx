@@ -9,8 +9,8 @@ type RawSample = Record<string, unknown>;
 type LivePointT = LivePoint & { t: number };
 
 const WINDOW_MS = 10 * 60 * 1000;
-const FLUSH_MS = 5_000;
-const TICK_MS = 500;
+const FLUSH_MS = 1_000;
+const TICK_MS = 100;
 
 function safeNumber(value: unknown): number | null {
   if (value === null || value === undefined) return null;
