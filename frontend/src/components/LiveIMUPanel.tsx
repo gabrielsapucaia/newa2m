@@ -1,20 +1,18 @@
-﻿import { useEffect, useMemo, useRef, useState } from "react";
-import { XYLinesChart } from "../lib/chart";
-import TimeNavigator from "./TimeNavigator";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import EChartSeries from "./EChartSeries";
 import { useTelemetry, type LivePoint, EMPTY_POINTS } from "../store/telemetry";
 import { subscribeLastFrame, unsubscribeLastFrame } from "../lib/ws";
 import { getSeries2 } from "../lib/api";
 import { debounce, throttle, MINUTE_MS } from "../lib/timeutils";
 
 type RawSample = Record<string, unknown>;
+type LivePointT = LivePoint;
 
-type LivePointT = LivePoint & { t: number };
-
-const WINDOW_MS = 10 * MINUTE_MS; // 10 minutos visíveis
-const FLUSH_MS = 1_000; // aplica lote WS a cada 1 s
-const TICK_MS = 100; // deslize suave do eixo
-const BACKFILL_CHUNK_MS = 10 * MINUTE_MS; // 10 min por requisição
-const BACKFILL_THRESHOLD_MS = 30_000; // quando a janela encosta em 30 s do ponto mais antigo
+const WINDOW_MS = 10 * MINUTE_MS;
+const FLUSH_MS = 1_000;
+const TICK_MS = 100;
+const BACKFILL_CHUNK_MS = 10 * MINUTE_MS;
+const BACKFILL_THRESHOLD_MS = 30_000;
 
 const FIELD_PATHS = {
   speed: ["speed", "gnss.speed"],
@@ -31,7 +29,7 @@ const FIELD_PATHS = {
   imu_jerk_rms_y: ["imu_jerk_rms_y", "jerk_y", "imu.jerk.y.rms"],
   imu_jerk_rms_z: ["imu_jerk_rms_z", "jerk_z", "imu.jerk.z.rms"],
   shock_level: ["shock_level", "imu.motion.shock_score", "imu.motion.shock_level"],
-};
+} as const;
 
 function safeNumber(value: unknown): number | null {
   if (value === null || value === undefined) return null;
@@ -122,12 +120,15 @@ function toPoint(raw: RawSample): LivePointT {
   };
 }
 
-function clampDomain(domain: [number, number]): [number, number] {
-  const [start, end] = domain;
+function clampDomain([start, end]: [number, number]): [number, number] {
+  if (!Number.isFinite(start) || !Number.isFinite(end)) {
+    const now = Date.now();
+    return [now - MINUTE_MS, now];
+  }
   if (end - start < MINUTE_MS) {
     return [end - MINUTE_MS, end];
   }
-  return domain;
+  return [start, end];
 }
 
 export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
@@ -138,8 +139,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
   const setXDomain = useTelemetry((state) => state.setXDomain);
   const series = useTelemetry((state) => state.byDevice[deviceId]);
 
-  const pointsRaw = series?.points ?? EMPTY_POINTS;
-  const points = useMemo<LivePointT[]>(() => pointsRaw as LivePointT[], [pointsRaw]);
+  const points = useMemo<LivePointT[]>(() => (series?.points ?? EMPTY_POINTS) as LivePointT[], [series?.points]);
   const storedDomain = series?.xDomain ?? null;
   const oldestLoaded = series?.oldest ?? (points.length ? points[0].t : Date.now());
 
@@ -153,24 +153,29 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
 
   const liveDomain: [number, number] = [nowMs - WINDOW_MS, nowMs];
   const baseDomain = storedDomain ?? liveDomain;
-  const safeXDomain: [number, number] =
-    Array.isArray(baseDomain) &&
-    Number.isFinite(baseDomain[0]) &&
-    Number.isFinite(baseDomain[1])
-      ? baseDomain
-      : [Date.now() - MINUTE_MS, Date.now()];
-  const activeDomain: [number, number] = clampDomain(isLive ? liveDomain : safeXDomain);
+  const safeDomain = clampDomain(baseDomain);
+  const activeDomain = isLive ? liveDomain : safeDomain;
 
-  const liveDomainRef = useRef<[number, number] | null>(null);
+  const programmaticZoomRef = useRef(false);
+  const lastLiveDomainRef = useRef<[number, number] | null>(null);
+
+  const pushDomain = useCallback(
+    (domain: [number, number]) => {
+      programmaticZoomRef.current = true;
+      setXDomain(deviceId, domain);
+    },
+    [deviceId, setXDomain],
+  );
+
   useEffect(() => {
     if (!isLive) return;
-    const domain: [number, number] = [liveDomain[0], liveDomain[1]];
-    const last = liveDomainRef.current;
-    if (!last || Math.abs(domain[0] - last[0]) > 500 || Math.abs(domain[1] - last[1]) > 500) {
-      liveDomainRef.current = domain;
-      setXDomain(deviceId, domain);
+    const next: [number, number] = [liveDomain[0], liveDomain[1]];
+    const previous = lastLiveDomainRef.current;
+    if (!previous || Math.abs(next[0] - previous[0]) > 500 || Math.abs(next[1] - previous[1]) > 500) {
+      lastLiveDomainRef.current = next;
+      pushDomain(next);
     }
-  }, [deviceId, liveDomain[0], liveDomain[1], isLive, setXDomain]);
+  }, [isLive, liveDomain, pushDomain]);
 
   const stagingRef = useRef<LivePointT[]>([]);
 
@@ -187,7 +192,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
         if (mapped.length) {
           const oldest = Math.min(...mapped.map((p) => p.t));
           setOldest(deviceId, oldest);
-          setXDomain(deviceId, liveDomain);
+          pushDomain(liveDomain);
         }
       };
 
@@ -197,8 +202,11 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
         try {
           await attempt({ bucket: "10s", window_sec: BACKFILL_CHUNK_MS / 1000 });
         } catch (error) {
-          if (mounted) reset(deviceId, []);
           console.error("[LiveIMUPanel] backfill inicial falhou", error);
+          if (mounted) {
+            reset(deviceId, []);
+            pushDomain(liveDomain);
+          }
         }
       }
     };
@@ -208,7 +216,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
     return () => {
       mounted = false;
     };
-  }, [deviceId, reset, setOldest, setXDomain, liveDomain]);
+  }, [deviceId, liveDomain, pushDomain, reset, setOldest]);
 
   useEffect(() => {
     if (!isLive) {
@@ -240,7 +248,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
       window.clearInterval(id);
       flush();
     };
-  }, [deviceId, appendMany]);
+  }, [appendMany, deviceId]);
 
   useEffect(() => {
     return () => {
@@ -281,41 +289,53 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
     }
   }, [activeDomain, oldestLoaded, fetchBackfill]);
 
-  const handleBrushRange = useMemo(
+  const handleDataZoom = useMemo(
     () =>
       debounce((range: [number, number]) => {
+        if (programmaticZoomRef.current) {
+          programmaticZoomRef.current = false;
+          return;
+        }
+        const next = clampDomain(range);
         setIsLive(false);
-        setXDomain(deviceId, clampDomain(range));
+        setXDomain(deviceId, next);
       }, 150),
     [deviceId, setXDomain],
   );
 
-  const goLive = () => {
+  const goLive = useCallback(() => {
     setIsLive(true);
-    setXDomain(deviceId, liveDomain);
-  };
+    pushDomain(liveDomain);
+  }, [liveDomain, pushDomain]);
 
-  const pauseLive = () => {
+  const pauseLive = useCallback(() => {
     setIsLive(false);
-  };
-
-  const syncId = `imu-${deviceId}`;
+  }, []);
 
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
-        <button onClick={goLive} className={`px-2 py-1 rounded-2xl border border-slate-700 ${isLive ? "bg-sky-600 text-white" : "bg-slate-900 text-slate-100 hover:bg-slate-800"}`}>
+        <button
+          onClick={goLive}
+          className={`px-2 py-1 rounded-2xl border border-slate-700 ${isLive ? "bg-sky-600 text-white" : "bg-slate-900 text-slate-100 hover:bg-slate-800"}`}
+        >
           Ao vivo
         </button>
-        <button onClick={pauseLive} className={`px-2 py-1 rounded-2xl border border-slate-700 ${!isLive ? "bg-sky-600 text-white" : "bg-slate-900 text-slate-100 hover:bg-slate-800"}`}>
+        <button
+          onClick={pauseLive}
+          className={`px-2 py-1 rounded-2xl border border-slate-700 ${!isLive ? "bg-sky-600 text-white" : "bg-slate-900 text-slate-100 hover:bg-slate-800"}`}
+        >
           Pausar
         </button>
-        <span className="text-xs text-slate-400">Janela {new Date(activeDomain[0]).toLocaleTimeString("pt-BR", { hour12: false })} ? {new Date(activeDomain[1]).toLocaleTimeString("pt-BR", { hour12: false })}</span>
+        <span className="text-xs text-slate-400">
+          Janela {new Date(activeDomain[0]).toLocaleTimeString("pt-BR", { hour12: false })} →{" "}
+          {new Date(activeDomain[1]).toLocaleTimeString("pt-BR", { hour12: false })}
+        </span>
       </div>
 
       <div className="rounded-2xl border border-slate-800 bg-slate-900 p-3 shadow-lg">
         <div className="mb-1 text-sm font-semibold text-slate-200">Accel RMS (g)</div>
-        <XYLinesChart
+        <EChartSeries
           data={points}
           lines={[
             { key: "imu_acc_rms_x", name: "Ax" },
@@ -324,14 +344,12 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           ]}
           height={170}
           xDomain={activeDomain}
-          syncId={syncId}
-          syncMethod="value"
         />
       </div>
 
       <div className="rounded-2xl border border-slate-800 bg-slate-900 p-3 shadow-lg">
         <div className="mb-1 text-sm font-semibold text-slate-200">Gyro RMS</div>
-        <XYLinesChart
+        <EChartSeries
           data={points}
           lines={[
             { key: "imu_gyro_rms_x", name: "Gx" },
@@ -340,14 +358,12 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           ]}
           height={160}
           xDomain={activeDomain}
-          syncId={syncId}
-          syncMethod="value"
         />
       </div>
 
       <div className="rounded-2xl border border-slate-800 bg-slate-900 p-3 shadow-lg">
         <div className="mb-1 text-sm font-semibold text-slate-200">Jerk RMS</div>
-        <XYLinesChart
+        <EChartSeries
           data={points}
           lines={[
             { key: "imu_jerk_rms_x", name: "Jx" },
@@ -356,14 +372,12 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           ]}
           height={160}
           xDomain={activeDomain}
-          syncId={syncId}
-          syncMethod="value"
         />
       </div>
 
       <div className="rounded-2xl border border-slate-800 bg-slate-900 p-3 shadow-lg">
         <div className="mb-1 text-sm font-semibold text-slate-200">GNSS / Operação</div>
-        <XYLinesChart
+        <EChartSeries
           data={points}
           lines={[
             { key: "speed", name: "Speed (km/h)" },
@@ -372,15 +386,14 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           ]}
           height={160}
           xDomain={activeDomain}
-          syncId={syncId}
-          syncMethod="value"
+          showDataZoom
+          onRangeChange={handleDataZoom}
         />
-        <TimeNavigator data={points} xDomain={activeDomain} onBrush={handleBrushRange} syncId={syncId} />
       </div>
 
       <div className="rounded-2xl border border-slate-800 bg-slate-900 p-3 shadow-lg">
         <div className="mb-1 text-sm font-semibold text-slate-200">Barômetro / Choque</div>
-        <XYLinesChart
+        <EChartSeries
           data={points}
           lines={[
             { key: "baro", name: "Baro" },
@@ -388,13 +401,8 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           ]}
           height={160}
           xDomain={activeDomain}
-          syncId={syncId}
-          syncMethod="value"
         />
       </div>
     </div>
   );
 }
-
-
-
