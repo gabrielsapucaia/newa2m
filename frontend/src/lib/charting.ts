@@ -1,4 +1,4 @@
-export type XYPoint = Record<string, number | string | null | undefined>;
+﻿export type XYPoint = Record<string, number | string | null | undefined>;
 
 export type LineSpec = {
   key: string; // dataKey
@@ -13,6 +13,10 @@ export type ChartProps = {
   xDomain?: [number, number];
   yDomain?: [number | undefined, number | undefined];
   legend?: boolean;
+  syncId?: string;
+  syncMethod?: "value" | "index";
+  brush?: boolean;
+  brushProps?: Record<string, unknown>;
 };
 
 export type ChartEngine = "recharts"; // futuro: "uplot", "echarts" etc

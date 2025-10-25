@@ -1,18 +1,17 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { XYLinesChart } from "../lib/chart";
+import { XYLinesChart, XYLinesWithBrush } from "../lib/chart";
 import { useTelemetry, EMPTY_POINTS, type LivePoint } from "../store/telemetry";
 import { subscribeLastFrame, unsubscribeLastFrame } from "../lib/ws";
 import { getSeries2 } from "../lib/api";
-import { ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, Legend, Brush } from "recharts";
 
 type RawSample = Record<string, unknown>;
 
-const VIEW_WINDOW_MS = 10 * 60 * 1000; // 10 minutes visible by default
-const FLUSH_MS = 1_000; // apply WS points every second
-const TICK_MS = 100; // slide domain every 100 ms
-const BACKFILL_WINDOW_SEC = 600; // 10 minutes per backfill request
-const BACKFILL_THRESHOLD_MS = 5_000; // trigger backfill when viewport nears oldest sample
-const MIN_BRUSH_SPAN_MS = 10_000; // avoid zero-width selections
+const VIEW_WINDOW_MS = 10 * 60 * 1000;
+const FLUSH_MS = 1_000;
+const TICK_MS = 100;
+const BACKFILL_WINDOW_SEC = 600;
+const BACKFILL_THRESHOLD_MS = 5_000;
+const MIN_BRUSH_SPAN_MS = 10_000;
 
 function safeNumber(value: unknown): number | null {
   if (value === null || value === undefined) return null;
@@ -117,14 +116,6 @@ function toPoint(raw: RawSample): LivePoint {
   };
 }
 
-function formatTime(value: number): string {
-  try {
-    return new Date(value).toLocaleTimeString("pt-BR", { hour12: false });
-  } catch {
-    return String(value);
-  }
-}
-
 function computeBrushBounds(data: LivePoint[], domain: [number, number]) {
   if (!data.length) return { startIndex: 0, endIndex: 0 };
   const [start, end] = domain;
@@ -142,55 +133,6 @@ function clampDomain(domain: [number, number]): [number, number] {
     return [end - MIN_BRUSH_SPAN_MS, end];
   }
   return domain;
-}
-
-function GnssChart({
-  data,
-  domain,
-  brushStartIndex,
-  brushEndIndex,
-  onBrushChange,
-}: {
-  data: LivePoint[];
-  domain: [number, number];
-  brushStartIndex: number;
-  brushEndIndex: number;
-  onBrushChange: (range: { startIndex?: number; endIndex?: number }) => void;
-}) {
-  return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-3 shadow-lg">
-      <div className="mb-1 text-sm font-semibold text-slate-200">GNSS / Operacao</div>
-      <ResponsiveContainer width="100%" height={200}>
-        <LineChart data={data}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-          <XAxis
-            dataKey="t"
-            type="number"
-            tickFormatter={formatTime}
-            domain={domain}
-            allowDataOverflow
-            minTickGap={20}
-            stroke="#94a3b8"
-          />
-          <YAxis stroke="#94a3b8" domain={["auto", "auto"]} />
-          <Tooltip labelFormatter={(value) => formatTime(value as number)} />
-          <Legend />
-          <Line type="monotone" dot={false} isAnimationActive={false} dataKey="speed" name="Speed (km/h)" stroke="#38bdf8" />
-          <Line type="monotone" dot={false} isAnimationActive={false} dataKey="cn0_avg" name="CN0 (dB-Hz)" stroke="#f97316" />
-          <Line type="monotone" dot={false} isAnimationActive={false} dataKey="sats_used" name="#Sats" stroke="#22c55e" />
-          <Brush
-            dataKey="t"
-            stroke="#38bdf8"
-            travellerWidth={12}
-            startIndex={brushStartIndex}
-            endIndex={brushEndIndex}
-            height={24}
-            onChange={onBrushChange}
-          />
-        </LineChart>
-      </ResponsiveContainer>
-    </div>
-  );
 }
 
 export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
@@ -300,7 +242,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
   }, [isLive]);
 
   const latestSampleTs = points.length ? points[points.length - 1].t : nowMs;
-  const defaultDomain: [number, number] = [Math.max(latestSampleTs - VIEW_WINDOW_MS, latestSampleTs - VIEW_WINDOW_MS), latestSampleTs];
+  const defaultDomain: [number, number] = [latestSampleTs - VIEW_WINDOW_MS, latestSampleTs];
   const activeDomain = clampDomain(manualDomain ?? [defaultDomain[0], Math.max(nowMs, defaultDomain[1])]);
 
   const { startIndex: brushStartIndex, endIndex: brushEndIndex } = useMemo(
@@ -310,8 +252,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
 
   const requestBackfill = useCallback(
     async (endMs: number) => {
-      if (endMs <= 0) return;
-      if (backfillPendingRef.current) return;
+      if (endMs <= 0 || backfillPendingRef.current) return;
       const now = Date.now();
       if (now - lastBackfillTsRef.current < 1_000) return;
       const bucketKey = Math.floor(endMs / 1_000);
@@ -328,9 +269,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           end: new Date(endMs).toISOString(),
         });
         const rows = Array.isArray(seed?.data) ? (seed.data as RawSample[]) : [];
-        if (rows.length) {
-          appendMany(deviceId, rows.map(toPoint));
-        }
+        if (rows.length) appendMany(deviceId, rows.map(toPoint));
       } catch (error) {
         console.error("[LiveIMUPanel] backfill incremental falhou", error);
       } finally {
@@ -385,6 +324,8 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
     setIsLive(false);
   };
 
+  const syncId = `imu-${deviceId}`;
+
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
@@ -394,7 +335,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
         <button onClick={handlePause} className={`px-2 py-1 rounded-2xl border border-slate-700 ${!isLive ? "bg-sky-600 text-white" : "bg-slate-900 text-slate-100 hover:bg-slate-800"}`}>
           Pausar
         </button>
-        <span className="text-xs text-slate-400">Ultimos ~10 min • {points.length} pts</span>
+        <span className="text-xs text-slate-400">Últimos ~10 min • {points.length} pts</span>
       </div>
 
       <div className="rounded-2xl border border-slate-800 bg-slate-900 p-3 shadow-lg">
@@ -408,6 +349,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           ]}
           height={170}
           xDomain={activeDomain}
+          syncId={syncId}
         />
       </div>
 
@@ -422,6 +364,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           ]}
           height={160}
           xDomain={activeDomain}
+          syncId={syncId}
         />
       </div>
 
@@ -436,15 +379,21 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           ]}
           height={160}
           xDomain={activeDomain}
+          syncId={syncId}
         />
       </div>
 
-      <GnssChart
+      <XYLinesWithBrush
         data={points}
-        domain={activeDomain}
-        brushStartIndex={brushStartIndex}
-        brushEndIndex={brushEndIndex}
-        onBrushChange={handleBrushChange}
+        lines={[
+          { key: "speed", name: "Speed (km/h)" },
+          { key: "cn0_avg", name: "CN0 (dB-Hz)" },
+          { key: "sats_used", name: "#Sats" },
+        ]}
+        height={200}
+        xDomain={activeDomain}
+        syncId={syncId}
+        brushProps={{ onChange: handleBrushChange, startIndex: brushStartIndex, endIndex: brushEndIndex }}
       />
 
       <div className="rounded-2xl border border-slate-800 bg-slate-900 p-3 shadow-lg">
@@ -457,6 +406,7 @@ export default function LiveIMUPanel({ deviceId }: { deviceId: string }) {
           ]}
           height={160}
           xDomain={activeDomain}
+          syncId={syncId}
         />
       </div>
     </div>
