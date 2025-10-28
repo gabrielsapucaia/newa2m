@@ -50,4 +50,4 @@ SELECT
 FROM telemetry_flat;
 
 COMMENT ON VIEW v_telemetry_enriched IS 'Enriched telemetry view with extracted fields including truck status';
-COMMENT ON COLUMN telemetry_flat.truck_status IS 'Truck operational status: CARREGANDO, CARREGADO, BASCULANDO, VAZIO';
+COMMENT ON COLUMN telemetry_flat.truck_status IS 'Truck operational status: CARREGANDO, CHEIO, BASCULANDO, VAZIO';
