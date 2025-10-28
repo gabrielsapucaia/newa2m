@@ -186,24 +186,26 @@ def db_writer():
             jerk_y = fnum(g(payload, "imu", "jerk", "y", "rms", default=g(payload, "imu", "jerk", "y")))
             jerk_z = fnum(g(payload, "imu", "jerk", "z", "rms", default=g(payload, "imu", "jerk", "z")))
 
+            truck_status = g(payload, "truck", "status")
+
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO telemetry_flat
                       (ts, device_id, lat, lon, speed, heading, altitude,
                        imu_rms_x, imu_rms_y, imu_rms_z,
                        jerk_x, jerk_y, jerk_z,
-                       cn0_avg, sats_used, payload)
+                       cn0_avg, sats_used, truck_status, payload)
                     VALUES
                       (%s,%s,%s,%s,%s,%s,%s,
                        %s,%s,%s,
                        %s,%s,%s,
-                       %s,%s,%s)
+                       %s,%s,%s,%s)
                     ON CONFLICT DO NOTHING
                 """, (
                     ts_payload, device_id, lat, lon, speed, heading, altitude,
                     imu_rms_x, imu_rms_y, imu_rms_z,
                     jerk_x, jerk_y, jerk_z,
-                    cn0, sats, json.dumps(payload)
+                    cn0, sats, truck_status, json.dumps(payload)
                 ))
 
 def s3_writer():
